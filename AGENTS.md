@@ -1,43 +1,30 @@
-# Air Pollution Forecasting Using Recurrent Neural Networks (RNN)
+# Air Pollution Forecasting - ML Project
+
+## Project Commands
+- Dependency manager: `uv` (defined in pyproject.toml)
+- Entry point: `python main.py`
+- No test/lint/typecheck commands configured yet
+
+## Data Structure
+- Location: `./Pollution Data Raipur/`
+- 4 regions: Bhatagaon DCR, DCR AIIMS, IGKV DCR, SILTARA DCR
+- Organization: `region/year/month/xlsx files`
+- xlsx format: each file contains sheets for every date
+
+## Architecture Notes
+- `main.py`: placeholder stub (needs ML model implementation)
+- `pyproject.toml`: dependencies array is empty - add required ML libs
+- No existing model code - build from scratch per project task
 
 ## Project Task
-Develop a forecasting model using Recurrent Neural Networks (RNN/LSTM) to predict
-a selected air pollutant (e.g., PM2.5, PM10, NO2, O3) using historical pollutant and
-meteorological data, and compare its performance with a traditional machine learning
-model.
+1. Load pollution data (PM2.5/PM10/NO2/O3 target)
+2. Preprocess: clean, handle missing values, create lag features, normalize
+3. Implement RNN/LSTM model + baseline ML (Random Forest/Linear Regression)
+4. Compare RMSE and MAE between models
+5. Visualize predictions vs actual
 
-## Major Steps
-1. Data preprocessing – clean dataset, handle missing values, and organize time-series
-data.
-2. Feature engineering – create lag features and normalize input data.
-3. Model development – implement a basic RNN or LSTM model for prediction.
-4. Baseline comparison – train a simple ML model (e.g., Random Forest or Linear Re-
-gression).
-5. Model evaluation – compare RNN and ML model performance using RMSE and MAE.
-6. Result analysis and visualization – visualize predicted vs actual values and compare
-model performance.
-
-## Expected Output
-- Trained RNN/LSTM model
-- Baseline ML model
-- Performance comparison (RNN vs ML)
-- Visualization of prediction results
-
-### Notes
-- Data is available at ./Pollution Data Raipur/
-- Data is split in folders by region, year and month in that order, and each xlsx file has sheet for every date
-- uv is used for dependency and project management
-
-## File Tree
-
-```sh
-.
-├── AGENTS.md
-├── main.py
-├── Pollution Data Raipur
-│   ├── Bhatagaon DCR
-│   ├── DCR AIIMS
-│   ├── IGKV DCR
-│   └── SILTARA DCR
-└── pyproject.toml
-```
+## Setup Required
+Before starting, add dependencies to pyproject.toml:
+- Data: pandas, numpy, openpyxl
+- ML: scikit-learn, torch (or tensorflow)
+- Viz: matplotlib

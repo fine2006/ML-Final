@@ -4,4 +4,17 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pandas",
+    "numpy",
+    "openpyxl",
+    "xlrd",
+    "pyxlsb",
+    "scikit-learn",
+    "torch",
+    "matplotlib",
+    "xgboost",
+    "lightgbm",
+    "tqdm",
+    "optuna>=3.0.0",
+]

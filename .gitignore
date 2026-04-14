@@ -1,11 +1,52 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
+*.pyc
+*.py[cod]
 build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
 
 # Virtual environments
-.venv
+.venv/
+venv/
+env/
+
+# Models (recomputed on T4)
+models/*.pkl
+models/*.pt
+models/*.pth
+models/*.json
+
+# Visualizations (can regenerate)
+visualizations/*.png
+visualizations/*.csv
+visualizations/*.npy
+
+# Data files
 Pollution Data Raipur/
+*.xlsx
+*.xls
+*.csv
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Ruff cache
+.ruff_cache/
