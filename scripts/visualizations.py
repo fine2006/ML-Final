@@ -667,7 +667,9 @@ def plot_error_correlation_heatmap():
             )
             ax.set_title(f"t+{horizon}")
 
-    fig.colorbar(im, ax=axes, label="Error Correlation", shrink=0.6)
+    if len(preds) >= 2 and actuals is not None:
+        fig.colorbar(im, ax=axes, label="Error Correlation", shrink=0.6)
+
     plt.suptitle(
         "Model Error Correlations (Why LSTM weight is what it is)", fontsize=14, y=1.02
     )
