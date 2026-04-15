@@ -108,7 +108,7 @@ def plot_model_comparison():
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
-    for idx, horizon in enumerate([1, 24]):
+    for idx, horizon in enumerate([1, 12, 24]):
         ax = axes[idx]
         h_data = df[df["horizon"] == f"t+{horizon}"]
 
@@ -150,7 +150,7 @@ def plot_loss_curves():
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-    for idx, horizon in enumerate([1, 24]):
+    for idx, horizon in enumerate([1, 12, 24]):
         ax = axes[idx]
         history_file = MODELS_DIR / f"loss_history_t{horizon}.json"
 
@@ -269,7 +269,7 @@ def plot_residuals():
     model_name = "LSTM"
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-    for idx, horizon in enumerate([1, 24]):
+    for idx, horizon in enumerate([1, 12, 24]):
         ax = axes[idx]
         pred_file = MODELS_DIR / f"{model_name}_predictions_t{horizon}.npy"
         actual_file = MODELS_DIR / f"{model_name}_actuals_t{horizon}.npy"
@@ -364,6 +364,248 @@ def plot_horizon_degradation():
     print("  Saved horizon_degradation.png")
 
 
+def plot_ensemble_weights():
+    """Plot meta-learner weights for unified stacking."""
+    print("\n[7/7] Generating Ensemble Weights plot...")
+
+    csv_file = VIS_DIR / "all_results.csv"
+    if not csv_file.exists():
+        print("  Skipping: all_results.csv not found")
+        return
+
+    df = pd.read_csv(csv_file)
+    stacking_data = df[df["model"] == "Unified Stacking"]
+
+    if stacking_data.empty:
+        print("  Skipping: No Unified Stacking results")
+        return
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+    all_weights = []
+    for idx, horizon in enumerate([1, 12, 24]):
+        ax = axes[idx]
+        h_data = stacking_data[stacking_data["horizon"] == f"t+{horizon}"]
+
+        if h_data.empty:
+            ax.text(
+                0.5,
+                0.5,
+                f"No data for t+{horizon}",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+            ax.set_title(f"t+{horizon}")
+            continue
+
+        meta_weights = h_data.iloc[0].get("meta_weights", {})
+        if isinstance(meta_weights, str):
+            import ast
+
+            meta_weights = ast.literal_eval(meta_weights)
+
+        if not meta_weights:
+            ax.text(
+                0.5, 0.5, "No weights", ha="center", va="center", transform=ax.transAxes
+            )
+            ax.set_title(f"t+{horizon}")
+            continue
+
+        names = list(meta_weights.keys())
+        weights = list(meta_weights.values())
+
+        colors = [COLORS.get(n, "#333333") for n in names]
+        bars = ax.bar(names, weights, color=colors)
+
+        ax.axhline(y=0, color="black", linestyle="-", linewidth=0.5)
+        ax.set_ylabel("Weight")
+        ax.set_title(f"t+{horizon}")
+        ax.set_xticklabels(names, rotation=45, ha="right")
+
+        for bar, w in zip(bars, weights):
+            height = bar.get_height()
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height,
+                f"{w:.1%}" if w > 0 else f"{w:.1%}",
+                ha="center",
+                va="bottom" if w > 0 else "top",
+                fontsize=9,
+            )
+
+        all_weights.append((horizon, meta_weights))
+
+    plt.suptitle(
+        "Unified Stacking - Meta-learner Weights by Horizon", fontsize=14, y=1.02
+    )
+    plt.tight_layout()
+    plt.savefig(VIS_DIR / "ensemble_weights.png", dpi=150, bbox_inches="tight")
+    plt.close()
+
+    print("  Saved ensemble_weights.png")
+
+
+def plot_ensemble_benefit():
+    """Show improvement from unified stacking vs best individual model."""
+    print("\n[8/8] Generating Ensemble Benefit plot...")
+
+    csv_file = VIS_DIR / "all_results.csv"
+    if not csv_file.exists():
+        print("  Skipping: all_results.csv not found")
+        return
+
+    df = pd.read_csv(csv_file)
+    horizons = [1, 12, 24]
+
+    improvements = []
+    best_individual = []
+    stacking_rmse = []
+
+    for h in horizons:
+        h_data = df[df["horizon"] == f"t+{h}"]
+        if h_data.empty:
+            continue
+
+        stacking_row = h_data[h_data["model"] == "Unified Stacking"]
+        if stacking_row.empty:
+            continue
+
+        stacking_rmse_val = stacking_row["RMSE"].values[0]
+        other = h_data[h_data["model"] != "Unified Stacking"]
+        best_other_rmse = other["RMSE"].min()
+
+        improvement = (best_other_rmse - stacking_rmse_val) / best_other_rmse * 100
+
+        improvements.append(improvement)
+        best_individual.append(best_other_rmse)
+        stacking_rmse.append(stacking_rmse_val)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    x = np.arange(len(horizons))
+    width = 0.35
+
+    bars1 = ax.bar(
+        x - width / 2,
+        best_individual,
+        width,
+        label="Best Individual Model",
+        color="#ff7f0e",
+    )
+    bars2 = ax.bar(
+        x + width / 2, stacking_rmse, width, label="Unified Stacking", color="#9467bd"
+    )
+
+    ax.set_ylabel("RMSE")
+    ax.set_xlabel("Horizon")
+    ax.set_title("Unified Stacking vs Best Individual Model")
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"t+{h}" for h in horizons])
+    ax.legend()
+
+    for i, (b1, b2, imp) in enumerate(zip(bars1, bars2, improvements)):
+        ax.annotate(
+            f"-{imp:.1f}%",
+            xy=(b1.get_x() + b1.get_width() / 2, b1.get_height()),
+            xytext=(0, 5),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            color="green",
+        )
+
+    ax.grid(True, alpha=0.3, axis="y")
+    plt.tight_layout()
+    plt.savefig(VIS_DIR / "ensemble_benefit.png", dpi=150, bbox_inches="tight")
+    plt.close()
+
+    print("  Saved ensemble_benefit.png")
+
+
+def plot_prediction_scatter():
+    """Scatter plot showing correlation between model predictions."""
+    print("\n[9/9] Generating Prediction Scatter plot...")
+
+    horizons = [1, 24]
+    models = ["LSTM", "XGBoost", "LightGBM"]
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+    for idx, horizon in enumerate(horizons):
+        ax = axes[idx, 0]
+        lstm_file = MODELS_DIR / f"LSTM_predictions_t{horizon}.npy"
+        xgb_file = MODELS_DIR / f"XGBoost_predictions_t{horizon}.npy"
+
+        if not (lstm_file.exists() and xgb_file.exists()):
+            ax.text(
+                0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes
+            )
+            ax.set_title(f"t+{horizon}")
+        else:
+            lstm_pred = np.load(lstm_file)
+            xgb_pred = np.load(xgb_file)
+
+            min_len = min(len(lstm_pred), len(xgb_pred))
+            ax.scatter(
+                xgb_pred[:min_len], lstm_pred[:min_len], alpha=0.3, s=10, c="#9467bd"
+            )
+
+            ax.plot(
+                [xgb_pred.min(), xgb_pred.max()],
+                [xgb_pred.min(), xgb_pred.max()],
+                "r--",
+                linewidth=1,
+                label="Perfect correlation",
+            )
+
+            corr = np.corrcoef(xgb_pred[:min_len], lstm_pred[:min_len])[0, 1]
+            ax.set_xlabel("XGBoost Predictions")
+            ax.set_ylabel("LSTM Predictions")
+            ax.set_title(f"t+{horizon}: LSTM vs XGBoost (r={corr:.3f})")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+
+        ax2 = axes[idx, 1]
+        lgb_file = MODELS_DIR / f"LightGBM_predictions_t{horizon}.npy"
+
+        if not (lstm_file.exists() and lgb_file.exists()):
+            ax2.text(
+                0.5, 0.5, "No data", ha="center", va="center", transform=ax2.transAxes
+            )
+            ax2.set_title(f"t+{horizon}")
+        else:
+            lgb_pred = np.load(lgb_file)
+
+            min_len = min(len(lstm_pred), len(lgb_pred))
+            ax2.scatter(
+                lgb_pred[:min_len], lstm_pred[:min_len], alpha=0.3, s=10, c="#d62728"
+            )
+
+            ax2.plot(
+                [lgb_pred.min(), lgb_pred.max()],
+                [lgb_pred.min(), lgb_pred.max()],
+                "r--",
+                linewidth=1,
+                label="Perfect correlation",
+            )
+
+            corr = np.corrcoef(lgb_pred[:min_len], lstm_pred[:min_len])[0, 1]
+            ax2.set_xlabel("LightGBM Predictions")
+            ax2.set_ylabel("LSTM Predictions")
+            ax2.set_title(f"t+{horizon}: LSTM vs LightGBM (r={corr:.3f})")
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+
+    plt.suptitle("Model Prediction Correlations", fontsize=14, y=1.01)
+    plt.tight_layout()
+    plt.savefig(VIS_DIR / "prediction_scatter.png", dpi=150, bbox_inches="tight")
+    plt.close()
+
+    print("  Saved prediction_scatter.png")
+
+
 def generate_all_visualizations():
     """Generate all visualizations."""
     print("=" * 60)
@@ -376,6 +618,9 @@ def generate_all_visualizations():
     plot_feature_importance()
     plot_residuals()
     plot_horizon_degradation()
+    plot_ensemble_weights()
+    plot_ensemble_benefit()
+    plot_prediction_scatter()
 
     print("\n" + "=" * 60)
     print("VISUALIZATIONS COMPLETE")

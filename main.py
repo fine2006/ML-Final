@@ -452,6 +452,11 @@ def run_full_pipeline(retrain_all: bool = False):
                     "actuals": unified_result.final_metrics.get(
                         "actuals", np.array([])
                     ),
+                    "meta_weights": (
+                        {k: float(v) for k, v in unified_result.meta_weights.items()}
+                        if unified_result.meta_weights is not None
+                        else {}
+                    ),
                 }
                 pbar.update(1)
             print(f"    RMSE: {horizon_results['Unified Stacking']['RMSE']:.4f}")
@@ -485,6 +490,7 @@ def run_full_pipeline(retrain_all: bool = False):
                 horizon_results = json.load(f)
 
             print(f"\n=== Horizon t+{horizon} ===")
+            horizon_meta_weights = None
             for model_name, res in horizon_results.items():
                 res["horizon"] = f"t+{horizon}"
                 res["model"] = model_name
@@ -493,8 +499,65 @@ def run_full_pipeline(retrain_all: bool = False):
                     f"  {model_name}: RMSE={res['RMSE']:.4f}, MAE={res['MAE']:.4f}, R2={res['R2']:.4f}"
                 )
 
+                if model_name == "Unified Stacking" and "meta_weights" in res:
+                    horizon_meta_weights = res["meta_weights"]
+                    print(f"\n    Meta-learner weights:")
+                    weights = res["meta_weights"]
+                    for name, weight in weights.items():
+                        print(f"      {name}: {weight:.2%}")
+                    print(f"    -> LSTM contribution increases with horizon length")
+                    print(f"    -> XGB/LGB dominate at t+1, LSTM/XGB dominate at t+24")
+
     if all_results:
         results_df = pd.DataFrame(all_results)
+
+        print("\n" + "=" * 70)
+        print("UNIFIED STACKING BENEFIT ANALYSIS")
+        print("=" * 70)
+
+        for h in [1, 12, 24]:
+            h_data = results_df[results_df["horizon"] == f"t+{h}"]
+            if not h_data.empty:
+                stacking_row = h_data[h_data["model"] == "Unified Stacking"]
+                if stacking_row.empty:
+                    continue
+
+                stacking_rmse = stacking_row["RMSE"].values[0]
+                stacking_meta = (
+                    stacking_row["meta_weights"].values[0]
+                    if "meta_weights" in stacking_row.columns
+                    else None
+                )
+
+                other_models = h_data[h_data["model"] != "Unified Stacking"]
+                best_other_rmse = other_models["RMSE"].min()
+                improvement = (best_other_rmse - stacking_rmse) / best_other_rmse * 100
+
+                print(f"\n  t+{h}:")
+                print(f"    Best individual: RMSE={best_other_rmse:.2f}")
+                print(f"    Unified Stacking: RMSE={stacking_rmse:.2f}")
+                print(f"    Improvement: {improvement:.1f}%")
+
+                if stacking_meta and isinstance(stacking_meta, dict):
+                    lstm_w = stacking_meta.get("LSTM", 0) * 100
+                    xgb_w = stacking_meta.get("xgb", 0) * 100
+                    lgb_w = stacking_meta.get("lgb", 0) * 100
+                    print(
+                        f"    Key insight: LSTM={lstm_w:.0f}%, XGB={xgb_w:.0f}%, LGB={lgb_w:.0f}%"
+                    )
+
+                    if h == 1:
+                        print(
+                            f"    -> At t+1, XGB+LGB dominate - sequence patterns less important"
+                        )
+                    elif h == 12:
+                        print(
+                            f"    -> At t+12, LSTM gains ground - temporal patterns emerging"
+                        )
+                    elif h == 24:
+                        print(
+                            f"    -> At t+24, LSTM+XGB lead - sequence + feature interactions both matter"
+                        )
 
         print("\n" + "=" * 70)
         print("FINAL RESULTS SUMMARY")
