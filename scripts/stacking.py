@@ -362,6 +362,108 @@ def create_tuned_baseline_models(hyperparams: Dict[str, Dict]) -> Dict[str, Call
     return models
 
 
+def fit_unified(
+    self,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    lstm_test_preds: Optional[np.ndarray] = None,
+) -> StackingResult:
+    """
+    Unified stacking with 5 models (4 ML + LSTM).
+
+    Trains all base models on train, predicts on test, then fits meta-learner
+    directly on test predictions (no OOF needed).
+
+    Parameters:
+    -----------
+    X_train, y_train : Training data
+    X_test, y_test : Test data (for meta-learner training)
+    lstm_test_preds : Pre-computed LSTM test predictions (shorter due to seq_len)
+
+    Returns:
+    --------
+    StackingResult with final predictions and metrics
+    """
+    print("\n[Unified Stacking - 5 Models (4 ML + LSTM)]")
+
+    from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+    base_metrics = {}
+
+    print("\n  Training base models...")
+    test_predictions = {}
+    n_test = len(X_test)
+
+    for name, model_factory in self.base_models.items():
+        model = model_factory()
+        model.fit(X_train, y_train)
+        pred = model.predict(X_test)
+        test_predictions[name] = pred
+        self.fitted_base_models[name] = model
+
+        rmse = np.sqrt(mean_squared_error(y_test, pred))
+        mae = mean_absolute_error(y_test, pred)
+        r2 = r2_score(y_test, pred)
+
+        base_metrics[name] = {"RMSE": rmse, "MAE": mae, "R2": r2}
+        print(f"    {name}: Test RMSE={rmse:.4f}, R2={r2:.4f}")
+
+    print("\n  Combining predictions with LSTM...")
+    pred_list = [test_predictions[name] for name in self.base_models.keys()]
+
+    if lstm_test_preds is not None and len(lstm_test_preds) > 0:
+        pred_list.append(lstm_test_preds)
+        base_metrics["LSTM (pre-computed)"] = {
+            "RMSE": np.sqrt(
+                mean_squared_error(y_test[: len(lstm_test_preds)], lstm_test_preds)
+            )
+        }
+
+    pred_array = np.column_stack(pred_list)
+
+    min_len = min(len(p) for p in pred_list)
+    pred_array_aligned = pred_array[:min_len]
+    y_test_aligned = y_test[:min_len]
+
+    print(f"    Combined shape: {pred_array_aligned.shape}")
+
+    print("\n  Training meta-learner on combined predictions...")
+    self.fit_meta(pred_array_aligned, y_test_aligned)
+
+    final_pred = self.meta_learner.predict(pred_array_aligned)
+
+    final_rmse = np.sqrt(mean_squared_error(y_test_aligned, final_pred))
+    final_mae = mean_absolute_error(y_test_aligned, final_pred)
+    final_r2 = r2_score(y_test_aligned, final_pred)
+
+    final_metrics = {
+        "RMSE": final_rmse,
+        "MAE": final_mae,
+        "R2": final_r2,
+        "predictions": final_pred,
+        "actuals": y_test_aligned,
+    }
+
+    meta_weights = None
+    if hasattr(self.meta_learner, "coef_"):
+        meta_weights = self.meta_learner.coef_
+        print(
+            f"\n  Meta-learner weights: {dict(zip(self.base_models.keys() + ['LSTM'], meta_weights))}"
+        )
+
+    print(f"\n  Unified Ensemble: Test RMSE={final_rmse:.4f}, R2={final_r2:.4f}")
+
+    return StackingResult(
+        base_model_metrics=base_metrics,
+        meta_model=self.meta_model,
+        meta_weights=meta_weights,
+        final_metrics=final_metrics,
+        oof_predictions=final_pred,
+    )
+
+
 def run_stacking_experiment(
     X_train: np.ndarray,
     y_train: np.ndarray,

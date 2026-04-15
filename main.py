@@ -400,40 +400,6 @@ def run_full_pipeline(retrain_all: bool = False):
                 pbar.update(1)
             print(f"    RMSE: {results['RMSE']:.4f}")
 
-            # === STACKING ENSEMBLE (Traditional ML) ===
-            print("\n  Training Stacking Ensemble...")
-            with tqdm(total=1, desc="  Stacking") as pbar:
-                base_models = (
-                    create_tuned_baseline_models(hyperparams)
-                    if hyperparams
-                    else create_default_baseline_models()
-                )
-                ensemble = StackingEnsemble(base_models, meta_model="ridge")
-                # Stack: train on train, OOF on val, evaluate on test
-                stacking_result = ensemble.fit_3way(
-                    X_train,
-                    y_train,
-                    X_val,
-                    y_val,
-                    X_test,
-                    y_test,
-                )
-
-                horizon_results["Stacking"] = {
-                    "model": "Stacking",
-                    "RMSE": stacking_result.final_metrics["RMSE"],
-                    "MAE": stacking_result.final_metrics["MAE"],
-                    "R2": stacking_result.final_metrics["R2"],
-                    "predictions": stacking_result.final_metrics.get(
-                        "predictions", np.array([])
-                    ),
-                    "actuals": stacking_result.final_metrics.get(
-                        "actuals", np.array([])
-                    ),
-                }
-                pbar.update(1)
-            print(f"    RMSE: {horizon_results['Stacking']['RMSE']:.4f}")
-
             # === LSTM (Bidirectional with Attention) ===
             print("\n  Training LSTM (BiLSTM + Multi-head Attention)...")
             with tqdm(total=1, desc="  LSTM (50 epochs)") as pbar:
@@ -453,87 +419,42 @@ def run_full_pipeline(retrain_all: bool = False):
                 pbar.update(1)
             print(f"    RMSE: {results['RMSE']:.4f}")
 
-            # === MEGA ENSEMBLE (ML Stacking + LSTM) with proper OOF ===
-            print("\n  Training Mega Ensemble (ML + LSTM with proper OOF)...")
-            with tqdm(total=1, desc="  Mega Ensemble") as pbar:
-                # Get test predictions from stacking and LSTM
-                stacking_test_preds = stacking_result.final_metrics.get(
-                    "predictions", np.array([])
+            # === UNIFIED STACKING (4 ML + LSTM) ===
+            # Get LSTM test predictions
+            lstm_test_preds = lstm_result["test_results"].get(
+                "predictions", np.array([])
+            )
+
+            print("\n  Training Unified Stacking (5 models)...")
+            with tqdm(total=1, desc="  Unified Stacking") as pbar:
+                base_models = (
+                    create_tuned_baseline_models(hyperparams)
+                    if hyperparams
+                    else create_default_baseline_models()
                 )
-                lstm_test_preds = lstm_result["test_results"].get(
-                    "predictions", np.array([])
+                ensemble = StackingEnsemble(base_models, meta_model="ridge")
+                unified_result = ensemble.fit_unified(
+                    X_train,
+                    y_train,
+                    X_test,
+                    y_test,
+                    lstm_test_preds=lstm_test_preds,
                 )
 
-                # Get OOF predictions for meta-learner training
-                stacking_oof = (
-                    stacking_result.oof_predictions
-                    if hasattr(stacking_result, "oof_predictions")
-                    else np.array([])
-                )
-                lstm_oof = lstm_result.get("oof_predictions", np.array([]))
-
-                if (
-                    len(stacking_test_preds) > 0
-                    and len(lstm_test_preds) > 0
-                    and len(stacking_oof) > 0
-                    and len(lstm_oof) > 0
-                ):
-                    # Align OOF sizes BEFORE column_stack (LSTM has shorter seq due to seq_len)
-                    min_len = min(len(stacking_oof), len(lstm_oof), len(y_val))
-
-                    mega_X_oof = np.column_stack(
-                        [stacking_oof[:min_len], lstm_oof[:min_len]]
-                    )
-                    y_oof = y_val[:min_len]
-
-                    # Test predictions alignment
-                    min_test = min(
-                        len(stacking_test_preds), len(lstm_test_preds), len(y_test)
-                    )
-                    mega_X_test = np.column_stack(
-                        [stacking_test_preds[:min_test], lstm_test_preds[:min_test]]
-                    )
-                    y_test_aligned = y_test[:min_test]
-
-                    mega_meta_ridge = Ridge(alpha=1.0)
-                    mega_meta_ridge.fit(mega_X_oof, y_oof)
-
-                    # Final prediction on test set
-                    mega_final_pred = mega_meta_ridge.predict(mega_X_test)
-
-                    mega_rmse = np.sqrt(
-                        np.mean((y_test_aligned - mega_final_pred) ** 2)
-                    )
-                    mega_mae = np.mean(np.abs(y_test_aligned - mega_final_pred))
-                    mega_r2 = 1 - np.sum(
-                        (y_test_aligned - mega_final_pred) ** 2
-                    ) / np.sum((y_test_aligned - np.mean(y_test_aligned)) ** 2)
-
-                    horizon_results["Mega Ensemble"] = {
-                        "model": "Mega Ensemble",
-                        "RMSE": mega_rmse,
-                        "MAE": mega_mae,
-                        "R2": mega_r2,
-                        "predictions": mega_final_pred,
-                        "actuals": y_test_aligned,
-                    }
-
-                    if hasattr(mega_meta_ridge, "coef_"):
-                        print(
-                            f"    Meta weights: ML={mega_meta_ridge.coef_[0]:.3f}, LSTM={mega_meta_ridge.coef_[1]:.3f}"
-                        )
-
-                    print(f"    RMSE: {mega_rmse:.4f}")
-                else:
-                    print("    Skipping: missing predictions")
-                    horizon_results["Mega Ensemble"] = {
-                        "model": "Mega Ensemble",
-                        "RMSE": 999.0,
-                        "MAE": 999.0,
-                        "R2": 0.0,
-                    }
-
+                horizon_results["Unified Stacking"] = {
+                    "model": "Unified Stacking",
+                    "RMSE": unified_result.final_metrics["RMSE"],
+                    "MAE": unified_result.final_metrics["MAE"],
+                    "R2": unified_result.final_metrics["R2"],
+                    "predictions": unified_result.final_metrics.get(
+                        "predictions", np.array([])
+                    ),
+                    "actuals": unified_result.final_metrics.get(
+                        "actuals", np.array([])
+                    ),
+                }
                 pbar.update(1)
+            print(f"    RMSE: {horizon_results['Unified Stacking']['RMSE']:.4f}")
 
             # Save results for this horizon
             save_results(horizon_results, horizon)
