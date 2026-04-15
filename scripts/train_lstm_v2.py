@@ -12,6 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from typing import Tuple, Dict
+from tqdm import tqdm
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -192,7 +193,7 @@ def train_lstm_model(
     epochs: int = 50,
     lr: float = 0.001,
     patience: int = 10,
-    device: str ="cuda" if torch.cuda.is_available() else "cpu",
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ) -> Tuple[nn.Module, Dict]:
     """Train LSTM model with early stopping."""
 
@@ -214,6 +215,8 @@ def train_lstm_model(
     patience_counter = 0
     best_model_state = None
     history = {"train_loss": [], "val_loss": []}
+
+    pbar = tqdm(total=epochs, desc=f"LSTM t+{horizon}", unit="epoch", leave=True)
 
     for epoch in range(epochs):
         # Training
@@ -252,9 +255,8 @@ def train_lstm_model(
 
         scheduler.step(val_loss)
 
-        print(
-            f"  Epoch {epoch + 1}/{epochs} - Train: {train_loss:.4f}, Val: {val_loss:.4f}"
-        )
+        pbar.set_postfix({"train": f"{train_loss:.4f}", "val": f"{val_loss:.4f}"})
+        pbar.update(1)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -263,8 +265,10 @@ def train_lstm_model(
         else:
             patience_counter += 1
             if patience_counter >= patience:
-                print(f"    Early stopping at epoch {epoch + 1}")
+                pbar.write(f"    Early stopping at epoch {epoch + 1}")
                 break
+
+    pbar.close()
 
     model.load_state_dict(best_model_state)
 
@@ -272,7 +276,9 @@ def train_lstm_model(
 
 
 def evaluate_lstm(
-    model: nn.Module, data_loader: DataLoader, device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    model: nn.Module,
+    data_loader: DataLoader,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ) -> Dict:
     """Evaluate LSTM model."""
     model.eval()
