@@ -330,18 +330,18 @@ class StackingEnsemble:
                 )
             }
 
-        pred_array = np.column_stack(pred_list)
-
         min_len = min(len(p) for p in pred_list)
-        pred_array_aligned = pred_array[:min_len]
+        pred_list_aligned = [p[:min_len] for p in pred_list]
+        pred_array = np.column_stack(pred_list_aligned)
+
         y_test_aligned = y_test[:min_len]
 
-        print(f"    Combined shape: {pred_array_aligned.shape}")
+        print(f"    Combined shape: {pred_array.shape}")
 
         print("\n  Training meta-learner on combined predictions...")
-        self.fit_meta(pred_array_aligned, y_test_aligned)
+        self.fit_meta(pred_array, y_test_aligned)
 
-        final_pred = self.meta_learner.predict(pred_array_aligned)
+        final_pred = self.meta_learner.predict(pred_array)
 
         final_rmse = np.sqrt(mean_squared_error(y_test_aligned, final_pred))
         final_mae = mean_absolute_error(y_test_aligned, final_pred)
