@@ -59,6 +59,23 @@ MODELS_DIR = Path("models")
 MODELS_DIR.mkdir(exist_ok=True)
 
 
+def get_hyperparam(params, key, default=None):
+    """Helper to extract hyperparams from BestParams or dict."""
+    if hasattr(params, "params"):
+        return params.params.get(key, default)
+    return params.get(key, default)
+
+
+def get_hyperparams_dict(hyperparams, model):
+    """Get params dict for a model from hyperopt result."""
+    hp = hyperparams.get(model)
+    if hp is None:
+        return {}
+    if hasattr(hp, "params"):
+        return hp.params
+    return hp
+
+
 def get_model_path(model_name: str, horizon: int) -> Path:
     """Get path for saving/loading a model."""
     return MODELS_DIR / f"{model_name}_t{horizon}"
@@ -302,7 +319,7 @@ def run_full_pipeline(retrain_all: bool = False):
             print("\n  Training Ridge Regression...")
             with tqdm(total=1, desc="  Ridge") as pbar:
                 ridge_alpha = (
-                    hyperparams["ridge"]["params"].get("alpha", 1.0)
+                    get_hyperparam(hyperparams.get("ridge"), "alpha", 1.0)
                     if hyperparams
                     else 1.0
                 )
@@ -319,7 +336,7 @@ def run_full_pipeline(retrain_all: bool = False):
             print("\n  Training Random Forest...")
             with tqdm(total=1, desc="  Random Forest") as pbar:
                 rf_params = (
-                    hyperparams["rf"]["params"]
+                    get_hyperparams_dict(hyperparams, "rf")
                     if hyperparams
                     else {"n_estimators": 300, "max_depth": None}
                 )
@@ -341,7 +358,7 @@ def run_full_pipeline(retrain_all: bool = False):
             print("\n  Training XGBoost...")
             with tqdm(total=1, desc="  XGBoost") as pbar:
                 xgb_params = (
-                    hyperparams["xgb"]["params"]
+                    get_hyperparams_dict(hyperparams, "xgb")
                     if hyperparams
                     else {"n_estimators": 800, "learning_rate": 0.03, "max_depth": 8}
                 )
@@ -364,7 +381,7 @@ def run_full_pipeline(retrain_all: bool = False):
             print("\n  Training LightGBM...")
             with tqdm(total=1, desc="  LightGBM") as pbar:
                 lgb_params = (
-                    hyperparams["lgb"]["params"]
+                    get_hyperparams_dict(hyperparams, "lgb")
                     if hyperparams
                     else {"n_estimators": 800, "learning_rate": 0.03, "num_leaves": 63}
                 )
