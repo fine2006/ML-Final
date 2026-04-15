@@ -1,8 +1,8 @@
 """
 DECISION LOG:
 - Bidirectional LSTM with Multi-Head Self-Attention
-- Separate models for t+1, t+6, t+24 horizons
-- CPU-only training (no GPU)
+- Separate models for t+1, t+24 horizons
+- GPU support (auto-detect)
 """
 
 import torch

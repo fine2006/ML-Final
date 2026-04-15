@@ -202,6 +202,75 @@ class StackingEnsemble:
             oof_predictions=oof_predictions,
         )
 
+    def fit_3way(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
+        X_test: np.ndarray,
+        y_test: np.ndarray,
+    ) -> StackingResult:
+        """Proper stacking with train/val/test split."""
+        print("\n[Stacking Ensemble - Traditional ML]")
+
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+        base_metrics = {}
+
+        print("\n  Training base models...")
+        oof_val = np.zeros((len(X_val), self.n_models))
+        oof_test = np.zeros((len(X_test), self.n_models))
+
+        for i, (name, model_factory) in enumerate(self.base_models.items()):
+            model = model_factory()
+            model.fit(X_train, y_train)
+
+            pred_val = model.predict(X_val)
+            pred_test = model.predict(X_test)
+            oof_val[:, i] = pred_val
+            oof_test[:, i] = pred_test
+
+            self.fitted_base_models[name] = model
+
+            rmse = np.sqrt(mean_squared_error(y_val, pred_val))
+            mae = mean_absolute_error(y_val, pred_val)
+            r2 = r2_score(y_val, pred_val)
+
+            base_metrics[name] = {"RMSE": rmse, "MAE": mae, "R2": r2}
+            print(f"    {name}: Val RMSE={rmse:.4f}, R2={r2:.4f}")
+
+        print("\n  Training meta-learner...")
+        self.fit_meta(oof_val, y_val)
+
+        final_pred = self.meta_learner.predict(oof_test)
+
+        final_rmse = np.sqrt(mean_squared_error(y_test, final_pred))
+        final_mae = mean_absolute_error(y_test, final_pred)
+        final_r2 = r2_score(y_test, final_pred)
+
+        final_metrics = {
+            "RMSE": final_rmse,
+            "MAE": final_mae,
+            "R2": final_r2,
+            "predictions": final_pred,
+            "actuals": y_test,
+        }
+
+        meta_weights = None
+        if hasattr(self.meta_learner, "coef_"):
+            meta_weights = self.meta_learner.coef_
+
+        print(f"\n  Ensemble: Test RMSE={final_rmse:.4f}, R2={final_r2:.4f}")
+
+        return StackingResult(
+            base_model_metrics=base_metrics,
+            meta_model=self.meta_model,
+            meta_weights=meta_weights,
+            final_metrics=final_metrics,
+            oof_predictions=oof_val,
+        )
+
 
 def create_default_baseline_models() -> Dict[str, Callable]:
     """Create default baseline models for stacking."""

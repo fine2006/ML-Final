@@ -36,7 +36,7 @@ def plot_predictions_vs_actual():
     """Plot predictions vs actual time series for each horizon."""
     print("\n[1/6] Generating Prediction vs Actual plots...")
 
-    horizons = [1, 6, 24]
+    horizons = [1, 12, 24]
     model_name = "LSTM"
 
     for horizon in horizons:
@@ -108,7 +108,7 @@ def plot_model_comparison():
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
-    for idx, horizon in enumerate([1, 6, 24]):
+    for idx, horizon in enumerate([1, 24]):
         ax = axes[idx]
         h_data = df[df["horizon"] == f"t+{horizon}"]
 
@@ -150,7 +150,7 @@ def plot_loss_curves():
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-    for idx, horizon in enumerate([1, 6, 24]):
+    for idx, horizon in enumerate([1, 24]):
         ax = axes[idx]
         history_file = MODELS_DIR / f"loss_history_t{horizon}.json"
 
@@ -269,7 +269,7 @@ def plot_residuals():
     model_name = "LSTM"
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-    for idx, horizon in enumerate([1, 6, 24]):
+    for idx, horizon in enumerate([1, 24]):
         ax = axes[idx]
         pred_file = MODELS_DIR / f"{model_name}_predictions_t{horizon}.npy"
         actual_file = MODELS_DIR / f"{model_name}_actuals_t{horizon}.npy"
@@ -325,7 +325,7 @@ def plot_horizon_degradation():
 
     df = pd.read_csv(csv_file)
     models = df["model"].unique()
-    horizons = [1, 6, 24]
+    horizons = [1, 12, 24]
 
     fig, ax = plt.subplots(figsize=(10, 6))
 

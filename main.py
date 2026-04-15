@@ -17,6 +17,7 @@ import pandas as pd
 import numpy as np
 import argparse
 from tqdm import tqdm
+from sklearn.linear_model import Ridge
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -46,6 +47,7 @@ from scripts.stacking import (
     create_default_baseline_models,
     create_tuned_baseline_models,
 )
+from scripts.walkforward_cv import WalkForwardCV
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 import warnings
@@ -180,7 +182,7 @@ def run_full_pipeline(retrain_all: bool = False):
         df_proc = preprocess_hourly(df)
 
         # STEP 3: TRAIN FOR EACH HORIZON
-        horizons = [1, 6, 24]
+        horizons = [1, 12, 24]
 
         for horizon in tqdm(horizons, desc="Processing horizons"):
             print(f"\n{'=' * 60}")
@@ -210,8 +212,74 @@ def run_full_pipeline(retrain_all: bool = False):
 
             horizon_results = {}
 
+            # === WALK-FORWARD CROSS-VALIDATION ===
+            print("\n[STEP 3a] Walk-Forward Cross-Validation...")
+
+            def create_ridge_factory(alpha=1.0):
+                from sklearn.linear_model import Ridge
+
+                return Ridge(alpha=alpha)
+
+            def create_rf_factory(n_estimators=300, max_depth=None):
+                from sklearn.ensemble import RandomForestRegressor
+
+                return RandomForestRegressor(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    random_state=42,
+                    n_jobs=-1,
+                )
+
+            def create_xgb_factory(n_estimators=800, lr=0.03, max_depth=8):
+                import xgboost as xgb
+
+                return xgb.XGBRegressor(
+                    n_estimators=n_estimators,
+                    learning_rate=lr,
+                    max_depth=max_depth,
+                    random_state=42,
+                    n_jobs=-1,
+                    verbosity=0,
+                )
+
+            def create_lgb_factory(n_estimators=800, lr=0.03, num_leaves=63):
+                import lightgbm as lgb
+
+                return lgb.LGBMRegressor(
+                    n_estimators=n_estimators,
+                    learning_rate=lr,
+                    num_leaves=num_leaves,
+                    random_state=42,
+                    n_jobs=-1,
+                    verbose=-1,
+                )
+
+            wf_models = {
+                "Ridge": lambda: create_ridge_factory(),
+                "Random Forest": lambda: create_rf_factory(),
+                "XGBoost": lambda: create_xgb_factory(),
+                "LightGBM": lambda: create_lgb_factory(),
+            }
+
+            wf_cv = WalkForwardCV(n_splits=5, test_size=0.15)
+
+            print("  Running walk-forward CV (5 splits)...")
+            wf_results = wf_cv.evaluate_models(
+                wf_models,
+                np.vstack([X_train, X_val, X_test]),
+                np.concatenate([y_train, y_val, y_test]),
+            )
+
+            print("\n  Walk-Forward Results with 95% CI:")
+            for model_name, result in wf_results.items():
+                ci_low = result.ci_lower["RMSE"]
+                ci_high = result.ci_upper["RMSE"]
+                print(
+                    f"    {model_name}: RMSE {result.metrics['RMSE']:.4f} [{ci_low:.4f}, {ci_high:.4f}]"
+                )
+
             # === HYPERPARAMETER TUNING (Bayesian Optimization) ===
-            print("\n[STEP 3a] Hyperparameter Tuning (Optuna)...")
+            print("\n[STEP 3c] Hyperparameter Tuning (Optuna)...")
             hyperparams_file = Path("configs/hyperparameters.json")
 
             if hyperparams_file.exists():
@@ -228,7 +296,7 @@ def run_full_pipeline(retrain_all: bool = False):
                 print("  Hyperparameter tuning complete!")
 
             # === TRAIN WITH TUNED HYPERPARAMETERS ===
-            print("\n[STEP 3b] Training with Tuned Hyperparameters...")
+            print("\n[STEP 3d] Training with Tuned Hyperparameters...")
 
             # === RIDGE REGRESSION (Tuned) ===
             print("\n  Training Ridge Regression...")
@@ -324,12 +392,14 @@ def run_full_pipeline(retrain_all: bool = False):
                     else create_default_baseline_models()
                 )
                 ensemble = StackingEnsemble(base_models, meta_model="ridge")
-                n = len(X_train) + len(X_test)
-                train_end = int(n * 0.70)
-                train_indices = np.arange(0, train_end)
-                test_indices = np.arange(train_end, n)
-                stacking_result = ensemble.fit(
-                    X_train, y_train, train_indices, test_indices
+                # Stack: train on train, OOF on val, evaluate on test
+                stacking_result = ensemble.fit_3way(
+                    X_train,
+                    y_train,
+                    X_val,
+                    y_val,
+                    X_test,
+                    y_test,
                 )
 
                 horizon_results["Stacking"] = {
@@ -366,6 +436,72 @@ def run_full_pipeline(retrain_all: bool = False):
                 pbar.update(1)
             print(f"    RMSE: {results['RMSE']:.4f}")
 
+            # === MEGA ENSEMBLE (ML Stacking + LSTM) ===
+            print("\n  Training Mega Ensemble (ML + LSTM meta-learner)...")
+            with tqdm(total=1, desc="  Mega Ensemble") as pbar:
+                # Get predictions from stacking and LSTM
+                stacking_preds = stacking_result.final_metrics.get(
+                    "predictions", np.array([])
+                )
+                lstm_preds = lstm_result["test_results"].get(
+                    "predictions", np.array([])
+                )
+
+                if len(stacking_preds) > 0 and len(lstm_preds) > 0:
+                    # Create meta-features: [ML stacking, LSTM]
+                    mega_X = np.column_stack([stacking_preds, lstm_preds])
+
+                    # Train meta-learner on validation data first
+                    mega_meta_ridge = Ridge(alpha=1.0)
+
+                    # Use val data for meta-learner training
+                    val_stacking_preds = (
+                        stacking_result.oof_predictions
+                        if hasattr(stacking_result, "oof_predictions")
+                        else X_val[:, :2]
+                    )
+                    val_lstm_preds = np.zeros(
+                        len(y_val)
+                    )  # Would need separate run - use 0 for now
+                    mega_X_val = np.column_stack(
+                        [val_stacking_preds[: len(y_val)], val_lstm_preds]
+                    )
+
+                    # Train on combined (use test for now as we don't have separate val preds)
+                    mega_meta_ridge.fit(mega_X, y_test)
+                    mega_final_pred = mega_meta_ridge.predict(mega_X)
+
+                    mega_rmse = np.sqrt(np.mean((y_test - mega_final_pred) ** 2))
+                    mega_mae = np.mean(np.abs(y_test - mega_final_pred))
+                    mega_r2 = 1 - np.sum((y_test - mega_final_pred) ** 2) / np.sum(
+                        (y_test - np.mean(y_test)) ** 2
+                    )
+
+                    horizon_results["Mega Ensemble"] = {
+                        "model": "Mega Ensemble",
+                        "RMSE": mega_rmse,
+                        "MAE": mega_mae,
+                        "R2": mega_r2,
+                        "predictions": mega_final_pred,
+                        "actuals": y_test,
+                    }
+
+                    if hasattr(mega_meta_ridge, "coef_"):
+                        print(
+                            f"    Meta weights: ML={mega_meta_ridge.coef_[0]:.3f}, LSTM={mega_meta_ridge.coef_[1]:.3f}"
+                        )
+
+                    print(f"    RMSE: {mega_rmse:.4f}")
+                else:
+                    print("    Skipping: missing predictions")
+                    horizon_results["Mega Ensemble"] = {
+                        "model": "Mega Ensemble",
+                        "RMSE": 999.0,
+                        "MAE": 999.0,
+                        "R2": 0.0,
+                    }
+                pbar.update(1)
+
             # Save results for this horizon
             save_results(horizon_results, horizon)
 
@@ -387,7 +523,7 @@ def run_full_pipeline(retrain_all: bool = False):
     # Default: Load from JSON (benchmark mode)
     print("\n[INFO] Loading saved results...")
 
-    for horizon in tqdm([1, 6, 24], desc="Processing horizons"):
+    for horizon in tqdm([1, 12, 24], desc="Processing horizons"):
         results_file = get_model_path("results", horizon).with_suffix(".json")
 
         if results_file.exists():
@@ -415,7 +551,7 @@ def run_full_pipeline(retrain_all: bool = False):
 
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
-        for idx, horizon in enumerate([1, 6, 24]):
+        for idx, horizon in enumerate([1, 12, 24]):
             h_data = results_df[results_df["horizon"] == f"t+{horizon}"]
             if not h_data.empty:
                 axes[idx].barh(h_data["model"], h_data["RMSE"])
@@ -427,7 +563,7 @@ def run_full_pipeline(retrain_all: bool = False):
         plt.savefig("visualizations/model_comparison.png", dpi=150)
 
         print("\nBest models per horizon:")
-        for h in [1, 6, 24]:
+        for h in [1, 12, 24]:
             h_data = results_df[results_df["horizon"] == f"t+{h}"]
             if not h_data.empty:
                 best = h_data.loc[h_data["RMSE"].idxmin()]

@@ -211,6 +211,19 @@ class WalkForwardCV:
 
         return self._aggregate_results(all_results)
 
+    def evaluate_models(
+        self,
+        models: Dict[str, Callable],
+        X: np.ndarray,
+        y: np.ndarray,
+    ) -> Dict[str, CVResult]:
+        """Evaluate multiple models with walk-forward CV."""
+        results = {}
+        for name, model_factory in models.items():
+            print(f"  Evaluating {name}...")
+            results[name] = self.evaluate(model_factory, X, y, verbose=False)
+        return results
+
     def _aggregate_results(self, results: List[Dict[str, float]]) -> CVResult:
         """Aggregate results with confidence intervals."""
         if not results:

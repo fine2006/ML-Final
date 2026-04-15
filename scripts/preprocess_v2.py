@@ -268,9 +268,9 @@ def create_horizon_targets(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
     if horizon == 1:
         # t+1: Next hour
         df["target"] = df["pm25"].shift(-1)
-    elif horizon == 6:
-        # t+6: 6 hours ahead
-        df["target"] = df["pm25"].shift(-6)
+    elif horizon == 12:
+        # t+12: 12 hours ahead
+        df["target"] = df["pm25"].shift(-12)
     elif horizon == 24:
         # t+24: 24 hours ahead
         df["target"] = df["pm25"].shift(-24)
