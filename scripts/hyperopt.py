@@ -12,9 +12,21 @@ from dataclasses import dataclass, asdict
 import json
 from pathlib import Path
 import warnings
+from tqdm import tqdm
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 warnings.filterwarnings("ignore")
+
+
+def optimize_with_tqdm(study, objective, n_trials, model_name):
+    """Wrapper to add tqdm progress to Optuna optimization."""
+    with tqdm(total=n_trials, desc=f"  {model_name}", unit="trial") as pbar:
+
+        def callback(study, trial):
+            pbar.update(1)
+
+        study.optimize(objective, n_trials=n_trials, callbacks=[callback])
+    return study
 
 
 @dataclass
@@ -45,7 +57,7 @@ def create_ridge_study(X_train, y_train, X_val, y_val, n_trials: int = 30):
     study = optuna.create_study(
         direction="minimize", sampler=optuna.samplers.TPESampler()
     )
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    study = optimize_with_tqdm(study, objective, n_trials, "Ridge")
 
     return BestParams(
         model="ridge",
@@ -81,7 +93,7 @@ def create_rf_study(X_train, y_train, X_val, y_val, n_trials: int = 30):
     study = optuna.create_study(
         direction="minimize", sampler=optuna.samplers.TPESampler()
     )
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    study = optimize_with_tqdm(study, objective, n_trials, "Random Forest")
 
     return BestParams(
         model="rf",
@@ -93,6 +105,9 @@ def create_rf_study(X_train, y_train, X_val, y_val, n_trials: int = 30):
         value=study.best_value,
         n_trials=n_trials,
     )
+
+
+# Also update RF context around line 96
 
 
 def create_xgb_study(X_train, y_train, X_val, y_val, n_trials: int = 40):
@@ -128,7 +143,7 @@ def create_xgb_study(X_train, y_train, X_val, y_val, n_trials: int = 40):
     study = optuna.create_study(
         direction="minimize", sampler=optuna.samplers.TPESampler()
     )
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    study = optimize_with_tqdm(study, objective, n_trials, "XGBoost")
 
     return BestParams(
         model="xgb",
@@ -178,7 +193,7 @@ def create_lgb_study(X_train, y_train, X_val, y_val, n_trials: int = 40):
     study = optuna.create_study(
         direction="minimize", sampler=optuna.samplers.TPESampler()
     )
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    study = optimize_with_tqdm(study, objective, n_trials, "LightGBM")
 
     return BestParams(
         model="lgb",
