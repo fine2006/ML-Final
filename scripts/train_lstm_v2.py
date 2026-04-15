@@ -193,6 +193,7 @@ def train_lstm_model(
     epochs: int = 50,
     lr: float = 0.001,
     patience: int = 10,
+    horizon: str = "t+1",
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ) -> Tuple[nn.Module, Dict]:
     """Train LSTM model with early stopping."""
@@ -352,11 +353,11 @@ def run_lstm_experiment(
         epochs=50,
         lr=0.001,
         patience=10,
-        device="cpu",
+        horizon=horizon,
     )
 
     # Evaluate
-    test_results = evaluate_lstm(model, test_loader, device="cpu")
+    test_results = evaluate_lstm(model, test_loader)
     print(
         f"  Test RMSE: {test_results['RMSE']:.4f}, MAE: {test_results['MAE']:.4f}, R2: {test_results['R2']:.4f}"
     )
