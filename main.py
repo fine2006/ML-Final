@@ -36,6 +36,16 @@ from scripts.train_baselines_v2 import (
     evaluate_model,
 )
 from scripts.train_lstm_v2 import TimeSeriesDataset, run_lstm_experiment
+from scripts.hyperopt import (
+    optimize_all_models,
+    load_hyperparameters,
+    create_model_from_config,
+)
+from scripts.stacking import (
+    StackingEnsemble,
+    create_default_baseline_models,
+    create_tuned_baseline_models,
+)
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 import warnings
@@ -200,11 +210,36 @@ def run_full_pipeline(retrain_all: bool = False):
 
             horizon_results = {}
 
-            # === RIDGE REGRESSION (was Linear Regression) ===
+            # === HYPERPARAMETER TUNING (Bayesian Optimization) ===
+            print("\n[STEP 3a] Hyperparameter Tuning (Optuna)...")
+            hyperparams_file = Path("configs/hyperparameters.json")
+
+            if hyperparams_file.exists():
+                print("  Loading saved hyperparameters...")
+                hyperparams = load_hyperparameters(str(hyperparams_file))
+                if hyperparams:
+                    print("  Using cached hyperparameters")
+                else:
+                    hyperparams = None
+
+            if not hyperparams_file.exists() or hyperparams is None:
+                print("  Running Bayesian optimization...")
+                hyperparams = optimize_all_models(X_train, y_train, X_val, y_val)
+                print("  Hyperparameter tuning complete!")
+
+            # === TRAIN WITH TUNED HYPERPARAMETERS ===
+            print("\n[STEP 3b] Training with Tuned Hyperparameters...")
+
+            # === RIDGE REGRESSION (Tuned) ===
             print("\n  Training Ridge Regression...")
             with tqdm(total=1, desc="  Ridge") as pbar:
+                ridge_alpha = (
+                    hyperparams["ridge"]["params"].get("alpha", 1.0)
+                    if hyperparams
+                    else 1.0
+                )
                 model = train_ridge_regression(
-                    X_train, y_train, X_val, y_val, alpha=1.0
+                    X_train, y_train, X_val, y_val, alpha=ridge_alpha
                 )
                 save_sklearn_model(model, "ridge", horizon)
                 results = evaluate_model(model, X_test, y_test, "Ridge Regression")
@@ -212,11 +247,21 @@ def run_full_pipeline(retrain_all: bool = False):
                 pbar.update(1)
             print(f"    RMSE: {results['RMSE']:.4f}")
 
-            # === RANDOM FOREST (increased complexity) ===
+            # === RANDOM FOREST (Tuned) ===
             print("\n  Training Random Forest...")
-            with tqdm(total=1, desc="  Random Forest (300 trees)") as pbar:
+            with tqdm(total=1, desc="  Random Forest") as pbar:
+                rf_params = (
+                    hyperparams["rf"]["params"]
+                    if hyperparams
+                    else {"n_estimators": 300, "max_depth": None}
+                )
                 model = train_random_forest(
-                    X_train, y_train, X_val, y_val, n_estimators=300, max_depth=None
+                    X_train,
+                    y_train,
+                    X_val,
+                    y_val,
+                    n_estimators=rf_params.get("n_estimators", 300),
+                    max_depth=rf_params.get("max_depth", None),
                 )
                 save_sklearn_model(model, "rf", horizon)
                 results = evaluate_model(model, X_test, y_test, "Random Forest")
@@ -224,17 +269,22 @@ def run_full_pipeline(retrain_all: bool = False):
                 pbar.update(1)
             print(f"    RMSE: {results['RMSE']:.4f}")
 
-            # === XGBOOST (tuned params) ===
+            # === XGBOOST (Tuned) ===
             print("\n  Training XGBoost...")
-            with tqdm(total=1, desc="  XGBoost (800 rounds)") as pbar:
+            with tqdm(total=1, desc="  XGBoost") as pbar:
+                xgb_params = (
+                    hyperparams["xgb"]["params"]
+                    if hyperparams
+                    else {"n_estimators": 800, "learning_rate": 0.03, "max_depth": 8}
+                )
                 model = train_xgboost(
                     X_train,
                     y_train,
                     X_val,
                     y_val,
-                    n_estimators=800,
-                    learning_rate=0.03,
-                    max_depth=8,
+                    n_estimators=xgb_params.get("n_estimators", 800),
+                    learning_rate=xgb_params.get("learning_rate", 0.03),
+                    max_depth=xgb_params.get("max_depth", 8),
                 )
                 save_sklearn_model(model, "xgb", horizon)
                 results = evaluate_model(model, X_test, y_test, "XGBoost")
@@ -242,23 +292,60 @@ def run_full_pipeline(retrain_all: bool = False):
                 pbar.update(1)
             print(f"    RMSE: {results['RMSE']:.4f}")
 
-            # === LIGHTGBM (tuned params) ===
+            # === LIGHTGBM (Tuned) ===
             print("\n  Training LightGBM...")
-            with tqdm(total=1, desc="  LightGBM (800 rounds)") as pbar:
+            with tqdm(total=1, desc="  LightGBM") as pbar:
+                lgb_params = (
+                    hyperparams["lgb"]["params"]
+                    if hyperparams
+                    else {"n_estimators": 800, "learning_rate": 0.03, "num_leaves": 63}
+                )
                 model = train_lightgbm(
                     X_train,
                     y_train,
                     X_val,
                     y_val,
-                    n_estimators=800,
-                    learning_rate=0.03,
-                    num_leaves=63,
+                    n_estimators=lgb_params.get("n_estimators", 800),
+                    learning_rate=lgb_params.get("learning_rate", 0.03),
+                    num_leaves=lgb_params.get("num_leaves", 63),
                 )
                 save_sklearn_model(model, "lgb", horizon)
                 results = evaluate_model(model, X_test, y_test, "LightGBM")
                 horizon_results["LightGBM"] = results
                 pbar.update(1)
             print(f"    RMSE: {results['RMSE']:.4f}")
+
+            # === STACKING ENSEMBLE (Traditional ML) ===
+            print("\n  Training Stacking Ensemble...")
+            with tqdm(total=1, desc="  Stacking") as pbar:
+                base_models = (
+                    create_tuned_baseline_models(hyperparams)
+                    if hyperparams
+                    else create_default_baseline_models()
+                )
+                ensemble = StackingEnsemble(base_models, meta_model="ridge")
+                n = len(X_train) + len(X_test)
+                train_end = int(n * 0.70)
+                train_indices = np.arange(0, train_end)
+                test_indices = np.arange(train_end, n)
+                stacking_result = ensemble.fit(
+                    X_train, y_train, train_indices, test_indices
+                )
+
+                horizon_results["Stacking"] = {
+                    "model": "Stacking",
+                    "RMSE": stacking_result.final_metrics["RMSE"],
+                    "MAE": stacking_result.final_metrics["MAE"],
+                    "R2": stacking_result.final_metrics["R2"],
+                    "predictions": stacking_result.final_metrics.get(
+                        "predictions", np.array([])
+                    ),
+                    "actuals": stacking_result.final_metrics.get(
+                        "actuals", np.array([])
+                    ),
+                }
+                pbar.update(1)
+            print(f"    RMSE: {horizon_results['Stacking']['RMSE']:.4f}")
 
             # === LSTM (Bidirectional with Attention) ===
             print("\n  Training LSTM (BiLSTM + Multi-head Attention)...")
