@@ -501,12 +501,16 @@ def run_full_pipeline(retrain_all: bool = False):
 
                 if model_name == "Unified Stacking" and "meta_weights" in res:
                     horizon_meta_weights = res["meta_weights"]
-                    print(f"\n    Meta-learner weights:")
+                    print(f"\n  ── Unified Stacking Meta-Learner Weights ──")
                     weights = res["meta_weights"]
                     for name, weight in weights.items():
-                        print(f"      {name}: {weight:.2%}")
-                    print(f"    -> LSTM contribution increases with horizon length")
-                    print(f"    -> XGB/LGB dominate at t+1, LSTM/XGB dominate at t+24")
+                        print(f"    {name:12s}: {weight:>7.2%}")
+                    print(f"  " + "─" * 45)
+                    print(
+                        f"    → LSTM contribution: {weights.get('LSTM', 0) * 100:.0f}%"
+                    )
+                    print(f"    → XGB contribution: {weights.get('xgb', 0) * 100:.0f}%")
+                    print(f"    → LGB contribution: {weights.get('lgb', 0) * 100:.0f}%")
 
     if all_results:
         results_df = pd.DataFrame(all_results)
@@ -558,6 +562,121 @@ def run_full_pipeline(retrain_all: bool = False):
                         print(
                             f"    -> At t+24, LSTM+XGB lead - sequence + feature interactions both matter"
                         )
+
+        # === CORRELATION ANALYSIS ===
+        print("\n" + "=" * 70)
+        print("MODEL CORRELATION ANALYSIS (Why LSTM weight is what it is)")
+        print("=" * 70)
+
+        model_names = [
+            "Ridge Regression",
+            "Random Forest",
+            "XGBoost",
+            "LightGBM",
+            "LSTM",
+        ]
+
+        for h in [1, 12, 24]:
+            print(f"\n--- Horizon t+{h} ---")
+
+            preds = {}
+            actuals = None
+
+            for model_name in model_names:
+                model_key = model_name.replace(" ", "").lower()
+                if model_name == "Ridge Regression":
+                    model_key = "ridge"
+                elif model_name == "Random Forest":
+                    model_key = "rf"
+
+                pred_file = MODELS_DIR / f"{model_key}_predictions_t{h}.npy"
+                actual_file = MODELS_DIR / f"{model_key}_actuals_t{h}.npy"
+
+                if pred_file.exists() and actual_file.exists():
+                    preds[model_name] = np.load(pred_file)
+                    if actuals is None:
+                        actuals = np.load(actual_file)
+
+            if len(preds) >= 2 and actuals is not None:
+                min_len = min(len(p) for p in preds.values())
+
+                print(f"\n  Prediction Correlations (how similar are model outputs):")
+                pred_matrix = np.column_stack(
+                    [preds[m][:min_len] for m in preds.keys()]
+                )
+                pred_corr = np.corrcoef(pred_matrix.T)
+
+                print("              ", end="")
+                for m in preds.keys():
+                    print(f" {m[:6]:>6}", end="")
+                print()
+                for i, m1 in enumerate(preds.keys()):
+                    print(f"  {m1[:12]:>12}", end="")
+                    for j, m2 in enumerate(preds.keys()):
+                        print(f" {pred_corr[i, j]:>6.2f}", end="")
+                    print()
+
+                print(f"\n  Error Correlations (how similar are model mistakes):")
+                errors = {}
+                for model_name, pred in preds.items():
+                    errors[model_name] = actuals[:min_len] - pred[:min_len]
+
+                error_matrix = np.column_stack([errors[m] for m in errors.keys()])
+                error_corr = np.corrcoef(error_matrix.T)
+
+                print("              ", end="")
+                for m in errors.keys():
+                    print(f" {m[:6]:>6}", end="")
+                print()
+                for i, m1 in enumerate(errors.keys()):
+                    print(f"  {m1[:12]:>12}", end="")
+                    for j, m2 in enumerate(errors.keys()):
+                        print(f" {error_corr[i, j]:>6.2f}", end="")
+                    print()
+
+                lstm_idx = list(preds.keys()).index("LSTM") if "LSTM" in preds else -1
+                xgb_idx = (
+                    list(preds.keys()).index("XGBoost") if "XGBoost" in preds else -1
+                )
+
+                if lstm_idx >= 0 and xgb_idx >= 0:
+                    lstm_xgb_pred_corr = pred_corr[lstm_idx, xgb_idx]
+                    lstm_xgb_err_corr = error_corr[lstm_idx, xgb_idx]
+
+                    print(f"\n  LSTM vs XGBoost:")
+                    print(f"    Prediction correlation: {lstm_xgb_pred_corr:.3f}")
+                    print(f"    Error correlation: {lstm_xgb_err_corr:.3f}")
+
+                    if lstm_xgb_pred_corr > 0.9:
+                        print(
+                            f"    -> HIGH correlation! Models make similar predictions."
+                        )
+                        print(
+                            f"       LSTM provides limited NEW information (ensemble diversifies less)."
+                        )
+                    elif lstm_xgb_pred_corr > 0.7:
+                        print(
+                            f"    -> MODERATE correlation. Some complementary patterns."
+                        )
+                    else:
+                        print(
+                            f"    -> LOW correlation. Models capture different patterns!"
+                        )
+
+                    if lstm_xgb_err_corr > 0.85:
+                        print(
+                            f"    -> High error correlation ({lstm_xgb_err_corr:.2f}) means both models"
+                        )
+                        print(
+                            f"       make SIMILAR mistakes. Meta-learner must weight carefully."
+                        )
+                    elif lstm_xgb_err_corr < 0.7:
+                        print(
+                            f"    -> Lower error correlation ({lstm_xgb_err_corr:.2f}) means"
+                        )
+                        print(f"       combining reduces variance effectively.")
+            else:
+                print(f"  (Prediction files not available for correlation analysis)")
 
         print("\n" + "=" * 70)
         print("FINAL RESULTS SUMMARY")

@@ -606,6 +606,78 @@ def plot_prediction_scatter():
     print("  Saved prediction_scatter.png")
 
 
+def plot_error_correlation_heatmap():
+    """Heatmap showing error correlation between models - explains ensemble weights."""
+    print("\n[10/10] Generating Error Correlation Heatmap...")
+
+    horizons = [1, 12, 24]
+    models = ["Ridge Regression", "Random Forest", "XGBoost", "LightGBM", "LSTM"]
+    model_keys = ["ridge", "rf", "xgb", "lgb", "lstm"]
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+    for idx, horizon in enumerate(horizons):
+        ax = axes[idx]
+
+        preds = {}
+        actuals = None
+
+        for model, key in zip(models, model_keys):
+            pred_file = MODELS_DIR / f"{key}_predictions_t{horizon}.npy"
+            actual_file = MODELS_DIR / f"{key}_actuals_t{horizon}.npy"
+
+            if pred_file.exists() and actual_file.exists():
+                preds[model] = np.load(pred_file)
+                if actuals is None:
+                    actuals = np.load(actual_file)
+
+        if len(preds) >= 2 and actuals is not None:
+            min_len = min(len(p) for p in preds.values())
+
+            errors = {}
+            for model_name, pred in preds.items():
+                errors[model_name] = actuals[:min_len] - pred[:min_len]
+
+            error_matrix = np.column_stack([errors[m] for m in errors.keys()])
+            error_corr = np.corrcoef(error_matrix.T)
+
+            im = ax.imshow(error_corr, cmap="RdYlBu_r", vmin=-1, vmax=1)
+
+            ax.set_xticks(range(len(errors)))
+            ax.set_yticks(range(len(errors)))
+            ax.set_xticklabels([m[:8] for m in errors.keys()], rotation=45, ha="right")
+            ax.set_yticklabels([m[:8] for m in errors.keys()])
+            ax.set_title(f"t+{horizon}")
+
+            for i in range(len(errors)):
+                for j in range(len(errors)):
+                    text = ax.text(
+                        j,
+                        i,
+                        f"{error_corr[i, j]:.2f}",
+                        ha="center",
+                        va="center",
+                        fontsize=8,
+                        color="white" if abs(error_corr[i, j]) > 0.5 else "black",
+                    )
+
+        else:
+            ax.text(
+                0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes
+            )
+            ax.set_title(f"t+{horizon}")
+
+    fig.colorbar(im, ax=axes, label="Error Correlation", shrink=0.6)
+    plt.suptitle(
+        "Model Error Correlations (Why LSTM weight is what it is)", fontsize=14, y=1.02
+    )
+    plt.tight_layout()
+    plt.savefig(VIS_DIR / "error_correlation_heatmap.png", dpi=150, bbox_inches="tight")
+    plt.close()
+
+    print("  Saved error_correlation_heatmap.png")
+
+
 def generate_all_visualizations():
     """Generate all visualizations."""
     print("=" * 60)
@@ -621,6 +693,7 @@ def generate_all_visualizations():
     plot_ensemble_weights()
     plot_ensemble_benefit()
     plot_prediction_scatter()
+    plot_error_correlation_heatmap()
 
     print("\n" + "=" * 60)
     print("VISUALIZATIONS COMPLETE")
