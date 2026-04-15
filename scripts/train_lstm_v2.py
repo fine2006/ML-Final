@@ -362,6 +362,11 @@ def run_lstm_experiment(
         f"  Test RMSE: {test_results['RMSE']:.4f}, MAE: {test_results['MAE']:.4f}, R2: {test_results['R2']:.4f}"
     )
 
+    # Generate OOF predictions using walk-forward splits for Mega Ensemble
+    print("  Generating LSTM OOF predictions for Mega Ensemble...")
+    val_results = evaluate_lstm(model, val_loader)
+    oof_predictions = val_results.get("predictions", np.array([]))
+
     # Save loss history to JSON for visualizations
     import json
 
@@ -372,8 +377,14 @@ def run_lstm_experiment(
     # Save predictions for visualization
     np.save(f"models/lstm_predictions_{horizon}.npy", test_results["predictions"])
     np.save(f"models/lstm_actuals_{horizon}.npy", test_results["actuals"])
+    np.save(f"models/lstm_oof_{horizon}.npy", oof_predictions)
 
-    return {"model": model, "history": history, "test_results": test_results}
+    return {
+        "model": model,
+        "history": history,
+        "test_results": test_results,
+        "oof_predictions": oof_predictions,
+    }
 
 
 if __name__ == "__main__":

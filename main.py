@@ -436,40 +436,52 @@ def run_full_pipeline(retrain_all: bool = False):
                 pbar.update(1)
             print(f"    RMSE: {results['RMSE']:.4f}")
 
-            # === MEGA ENSEMBLE (ML Stacking + LSTM) ===
-            print("\n  Training Mega Ensemble (ML + LSTM meta-learner)...")
+            # === MEGA ENSEMBLE (ML Stacking + LSTM) with proper OOF ===
+            print("\n  Training Mega Ensemble (ML + LSTM with proper OOF)...")
             with tqdm(total=1, desc="  Mega Ensemble") as pbar:
-                # Get predictions from stacking and LSTM
-                stacking_preds = stacking_result.final_metrics.get(
+                # Get test predictions from stacking and LSTM
+                stacking_test_preds = stacking_result.final_metrics.get(
                     "predictions", np.array([])
                 )
-                lstm_preds = lstm_result["test_results"].get(
+                lstm_test_preds = lstm_result["test_results"].get(
                     "predictions", np.array([])
                 )
 
-                if len(stacking_preds) > 0 and len(lstm_preds) > 0:
-                    # Create meta-features: [ML stacking, LSTM]
-                    mega_X = np.column_stack([stacking_preds, lstm_preds])
+                # Get OOF predictions for meta-learner training
+                stacking_oof = (
+                    stacking_result.oof_predictions
+                    if hasattr(stacking_result, "oof_predictions")
+                    else np.array([])
+                )
+                lstm_oof = lstm_result.get("oof_predictions", np.array([]))
 
-                    # Train meta-learner on validation data first
+                if (
+                    len(stacking_test_preds) > 0
+                    and len(lstm_test_preds) > 0
+                    and len(stacking_oof) > 0
+                    and len(lstm_oof) > 0
+                ):
+                    # Proper OOF: Train meta-learner on OOF, evaluate on test
+                    mega_X_oof = np.column_stack([stacking_oof, lstm_oof])
+                    mega_X_test = np.column_stack(
+                        [stacking_test_preds, lstm_test_preds]
+                    )
+
+                    # Align sizes - use minimum length
+                    min_len = min(len(mega_X_oof), len(y_val))
+                    if min_len > 0:
+                        mega_X_oof = mega_X_oof[:min_len]
+                        y_oof = y_val[:min_len]
+                    else:
+                        min_len = min(len(stacking_oof), len(lstm_oof), len(y_test))
+                        mega_X_oof = mega_X_oof[:min_len]
+                        y_oof = y_test[:min_len]
+
                     mega_meta_ridge = Ridge(alpha=1.0)
+                    mega_meta_ridge.fit(mega_X_oof, y_oof)
 
-                    # Use val data for meta-learner training
-                    val_stacking_preds = (
-                        stacking_result.oof_predictions
-                        if hasattr(stacking_result, "oof_predictions")
-                        else X_val[:, :2]
-                    )
-                    val_lstm_preds = np.zeros(
-                        len(y_val)
-                    )  # Would need separate run - use 0 for now
-                    mega_X_val = np.column_stack(
-                        [val_stacking_preds[: len(y_val)], val_lstm_preds]
-                    )
-
-                    # Train on combined (use test for now as we don't have separate val preds)
-                    mega_meta_ridge.fit(mega_X, y_test)
-                    mega_final_pred = mega_meta_ridge.predict(mega_X)
+                    # Final prediction on test set
+                    mega_final_pred = mega_meta_ridge.predict(mega_X_test)
 
                     mega_rmse = np.sqrt(np.mean((y_test - mega_final_pred) ** 2))
                     mega_mae = np.mean(np.abs(y_test - mega_final_pred))
@@ -500,6 +512,7 @@ def run_full_pipeline(retrain_all: bool = False):
                         "MAE": 999.0,
                         "R2": 0.0,
                     }
+
                 pbar.update(1)
 
             # Save results for this horizon
