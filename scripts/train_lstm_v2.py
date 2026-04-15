@@ -11,7 +11,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from typing import Tuple, Dict, Optional
+from typing import Tuple, Dict
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -192,7 +192,7 @@ def train_lstm_model(
     epochs: int = 50,
     lr: float = 0.001,
     patience: int = 10,
-    device: str = "cpu",
+    device: str ="cuda" if torch.cuda.is_available() else "cpu",
 ) -> Tuple[nn.Module, Dict]:
     """Train LSTM model with early stopping."""
 
@@ -272,7 +272,7 @@ def train_lstm_model(
 
 
 def evaluate_lstm(
-    model: nn.Module, data_loader: DataLoader, device: str = "cpu"
+    model: nn.Module, data_loader: DataLoader, device: str = "cuda" if torch.cuda.is_available() else "cpu"
 ) -> Dict:
     """Evaluate LSTM model."""
     model.eval()
