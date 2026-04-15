@@ -583,11 +583,8 @@ def run_full_pipeline(retrain_all: bool = False):
             actuals = None
 
             for model_name in model_names:
-                model_key = model_name.replace(" ", "").lower()
-                if model_name == "Ridge Regression":
-                    model_key = "ridge"
-                elif model_name == "Random Forest":
-                    model_key = "rf"
+                # Use full model name as that's how files are saved
+                model_key = model_name
 
                 pred_file = MODELS_DIR / f"{model_key}_predictions_t{h}.npy"
                 actual_file = MODELS_DIR / f"{model_key}_actuals_t{h}.npy"
