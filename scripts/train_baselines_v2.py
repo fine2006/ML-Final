@@ -76,6 +76,8 @@ def train_xgboost(
         "min_child_weight": 3,
         "subsample": 0.8,
         "colsample_bytree": 0.8,
+        "tree_method": "hist",
+        "device": "cuda",
     }
 
     if X_val is not None and y_val is not None:

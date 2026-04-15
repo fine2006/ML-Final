@@ -478,21 +478,22 @@ def run_full_pipeline(retrain_all: bool = False):
                     and len(stacking_oof) > 0
                     and len(lstm_oof) > 0
                 ):
-                    # Proper OOF: Train meta-learner on OOF, evaluate on test
-                    mega_X_oof = np.column_stack([stacking_oof, lstm_oof])
-                    mega_X_test = np.column_stack(
-                        [stacking_test_preds, lstm_test_preds]
-                    )
+                    # Align OOF sizes BEFORE column_stack (LSTM has shorter seq due to seq_len)
+                    min_len = min(len(stacking_oof), len(lstm_oof), len(y_val))
 
-                    # Align sizes - use minimum length
-                    min_len = min(len(mega_X_oof), len(y_val))
-                    if min_len > 0:
-                        mega_X_oof = mega_X_oof[:min_len]
-                        y_oof = y_val[:min_len]
-                    else:
-                        min_len = min(len(stacking_oof), len(lstm_oof), len(y_test))
-                        mega_X_oof = mega_X_oof[:min_len]
-                        y_oof = y_test[:min_len]
+                    mega_X_oof = np.column_stack(
+                        [stacking_oof[:min_len], lstm_oof[:min_len]]
+                    )
+                    y_oof = y_val[:min_len]
+
+                    # Test predictions alignment
+                    min_test = min(
+                        len(stacking_test_preds), len(lstm_test_preds), len(y_test)
+                    )
+                    mega_X_test = np.column_stack(
+                        [stacking_test_preds[:min_test], lstm_test_preds[:min_test]]
+                    )
+                    y_test_aligned = y_test[:min_test]
 
                     mega_meta_ridge = Ridge(alpha=1.0)
                     mega_meta_ridge.fit(mega_X_oof, y_oof)
@@ -500,11 +501,13 @@ def run_full_pipeline(retrain_all: bool = False):
                     # Final prediction on test set
                     mega_final_pred = mega_meta_ridge.predict(mega_X_test)
 
-                    mega_rmse = np.sqrt(np.mean((y_test - mega_final_pred) ** 2))
-                    mega_mae = np.mean(np.abs(y_test - mega_final_pred))
-                    mega_r2 = 1 - np.sum((y_test - mega_final_pred) ** 2) / np.sum(
-                        (y_test - np.mean(y_test)) ** 2
+                    mega_rmse = np.sqrt(
+                        np.mean((y_test_aligned - mega_final_pred) ** 2)
                     )
+                    mega_mae = np.mean(np.abs(y_test_aligned - mega_final_pred))
+                    mega_r2 = 1 - np.sum(
+                        (y_test_aligned - mega_final_pred) ** 2
+                    ) / np.sum((y_test_aligned - np.mean(y_test_aligned)) ** 2)
 
                     horizon_results["Mega Ensemble"] = {
                         "model": "Mega Ensemble",
@@ -512,7 +515,7 @@ def run_full_pipeline(retrain_all: bool = False):
                         "MAE": mega_mae,
                         "R2": mega_r2,
                         "predictions": mega_final_pred,
-                        "actuals": y_test,
+                        "actuals": y_test_aligned,
                     }
 
                     if hasattr(mega_meta_ridge, "coef_"):
