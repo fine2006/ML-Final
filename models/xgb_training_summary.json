@@ -1,0 +1,116 @@
+{
+  "created_at": "2026-04-17T02:22:32.108866",
+  "random_seed": 42,
+  "horizons": [
+    1
+  ],
+  "quantiles": [
+    0.05,
+    0.5,
+    0.95,
+    0.99
+  ],
+  "feature_count": 92,
+  "xgb_device": "cpu",
+  "pollutants": {
+    "pm25": {
+      "models": {
+        "h1_q0.05": "/var/home/fine/AI-slop/ML-Final/models/xgb_quantile_pm25_h1_q05.json",
+        "h1_q0.5": "/var/home/fine/AI-slop/ML-Final/models/xgb_quantile_pm25_h1_q50.json",
+        "h1_q0.95": "/var/home/fine/AI-slop/ML-Final/models/xgb_quantile_pm25_h1_q95.json",
+        "h1_q0.99": "/var/home/fine/AI-slop/ML-Final/models/xgb_quantile_pm25_h1_q99.json"
+      },
+      "metrics": {
+        "h1": {
+          "rmse": 17.36593281567661,
+          "mae": 14.027261734008789,
+          "r2": -0.05910992622375488,
+          "coverage_p05_p95": 0.86255103303229,
+          "crps_approx": 46.84070587158203,
+          "by_region": {
+            "AIIMS": {
+              "rmse": 17.71386565312476,
+              "mae": 14.80639362335205,
+              "coverage_p05_p95": 0.8184965380811078,
+              "count": 4044
+            },
+            "Bhatagaon": {
+              "rmse": 19.15873425852219,
+              "mae": 15.646588325500488,
+              "coverage_p05_p95": 0.8180466038671294,
+              "count": 4034
+            },
+            "IGKV": {
+              "rmse": 15.121012012178978,
+              "mae": 13.39953899383545,
+              "coverage_p05_p95": 0.8597922848664689,
+              "count": 4044
+            },
+            "SILTARA": {
+              "rmse": 17.233144292526283,
+              "mae": 12.260530471801758,
+              "coverage_p05_p95": 0.9537586547972304,
+              "count": 4044
+            }
+          },
+          "fairness": {
+            "rmse_max_min_ratio": 1.2670272494388004,
+            "rmse_max": 19.15873425852219,
+            "rmse_min": 15.121012012178978
+          }
+        }
+      }
+    }
+  },
+  "source": {
+    "data_dir": "/var/home/fine/AI-slop/ML-Final/data/preprocessed_xgb_v1",
+    "merge_policy": "hourly_preferred_quarterly_fill",
+    "floor_policy": "timestamp.floor('h') for hourly and quarterly",
+    "source_contribution": {
+      "rows_by_granularity": {
+        "quarterly": 580929,
+        "hourly": 169611
+      },
+      "unique_hours": {
+        "hourly": 121327,
+        "quarterly": 115784,
+        "overlap": 112094,
+        "quarterly_only": 3690,
+        "combined": 125017,
+        "combined_saved_rows": 125017
+      },
+      "pm25_availability": {
+        "from_hourly": 114900,
+        "from_quarterly_fill": 5689,
+        "combined_non_null": 120589,
+        "missing_both": 4428
+      },
+      "per_region": {
+        "Bhatagaon": {
+          "hourly_unique_hours": 29949,
+          "quarterly_unique_hours": 29954,
+          "quarterly_only_hours": 1491,
+          "combined_unique_hours": 31440
+        },
+        "AIIMS": {
+          "hourly_unique_hours": 30536,
+          "quarterly_unique_hours": 31250,
+          "quarterly_only_hours": 879,
+          "combined_unique_hours": 31415
+        },
+        "IGKV": {
+          "hourly_unique_hours": 30785,
+          "quarterly_unique_hours": 30648,
+          "quarterly_only_hours": 223,
+          "combined_unique_hours": 31008
+        },
+        "SILTARA": {
+          "hourly_unique_hours": 30057,
+          "quarterly_unique_hours": 23932,
+          "quarterly_only_hours": 1097,
+          "combined_unique_hours": 31154
+        }
+      }
+    }
+  }
+}

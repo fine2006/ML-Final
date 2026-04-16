@@ -1,0 +1,50 @@
+{
+  "created_at": "2026-04-17T01:09:41.391449",
+  "pollutants_requested": [
+    "pm25"
+  ],
+  "horizons_requested": [
+    1,
+    12
+  ],
+  "rows": [
+    {
+      "pollutant": "pm25",
+      "horizon": 1,
+      "n_common": 12571,
+      "lstm_rmse": 10.154747860669389,
+      "xgb_rmse": 6.354951637018011,
+      "rmse_improvement_pct": -59.79268514833874,
+      "lstm_crps": 15.249781608581543,
+      "xgb_crps": 7.286360740661621,
+      "crps_improvement_pct": -109.29215765395692,
+      "lstm_coverage": 0.8454379126561132,
+      "xgb_coverage": 0.8429719194972556,
+      "lstm_pit_ks": 0.1337599754333496,
+      "xgb_pit_ks": 0.17257803678512573,
+      "lstm_pit_pvalue": 0.0,
+      "xgb_pit_pvalue": 0.0,
+      "lstm_fairness_ratio": 2.3358110080968237,
+      "xgb_fairness_ratio": 2.7415314920261205
+    },
+    {
+      "pollutant": "pm25",
+      "horizon": 12,
+      "n_common": 12571,
+      "lstm_rmse": 12.923654417611893,
+      "xgb_rmse": 11.909736022842365,
+      "rmse_improvement_pct": -8.513357414680522,
+      "lstm_crps": 21.4210262298584,
+      "xgb_crps": 17.964792251586914,
+      "crps_improvement_pct": -19.238930959338976,
+      "lstm_coverage": 0.7958794049797152,
+      "xgb_coverage": 0.7563439662715774,
+      "lstm_pit_ks": 0.19394534826278687,
+      "xgb_pit_ks": 0.18537920713424683,
+      "lstm_pit_pvalue": 0.0,
+      "xgb_pit_pvalue": 0.0,
+      "lstm_fairness_ratio": 1.3531136443756782,
+      "xgb_fairness_ratio": 1.433338292087593
+    }
+  ]
+}

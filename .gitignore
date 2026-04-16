@@ -1,52 +1,77 @@
-# Python-generated files
+# Python cache/build artifacts
 __pycache__/
-*.py[oc]
-*.pyc
 *.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 build/
 dist/
 wheels/
-*.egg-info
-.pytest_cache/
+*.egg-info/
 
 # Virtual environments
 .venv/
 venv/
 env/
 
-# Models (recomputed on T4)
-models/*.pkl
-models/*.pt
-models/*.pth
-models/*.json
-
-# Visualizations (can regenerate)
-visualizations/*.png
-visualizations/*.csv
-visualizations/*.npy
-
-# Data files
-Pollution Data Raipur/
-*.xlsx
-*.xls
-*.csv
-
-# Jupyter
+# Notebooks
 .ipynb_checkpoints/
 *.ipynb
 
-# IDE
+# IDE/OS
 .idea/
 .vscode/
 *.swp
 *.swo
-
-# OS
 .DS_Store
 Thumbs.db
 
-# Logs
+# Logs and local runtime artifacts
+logs/
 *.log
 
-# Ruff cache
-.ruff_cache/
+# Transfer archives
+*.tgz
+*.tar
+*.tar.gz
+*.zip
+
+# Raw source datasets (never commit)
+Pollution Data Raipur/
+*.xlsx
+*.xls
+*.xlsb
+
+# Generated pipeline data (regenerate as needed)
+data/raw/
+data/preprocessed_lstm_v1/
+data/preprocessed_xgb_v1/
+
+# Generated visual outputs
+visualizations/**
+
+# Model artifacts
+models/*
+
+# Keep precomputed XGB quantile models (text JSON)
+!models/xgb_quantile_*.json
+
+# Keep lightweight summaries
+!models/lstm_training_summary.json
+!models/xgb_training_summary.json
+!models/evaluation_summary.json
+!models/fair_benchmark_summary.json
+
+# Always ignore large binary model outputs
+models/*.pt
+models/*.pth
+models/*.pkl
+models/*.npz
+models/*.bin
+
+# Optional: if you want to force retraining XGB too, uncomment next line
+# models/xgb_quantile_*.json
