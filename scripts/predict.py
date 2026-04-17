@@ -29,7 +29,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.train_lstm import (  # noqa: E402
     ALL_HORIZONS,
     HierarchicalQuantileLSTM,
-    MAX_SEQ_LEN,
 )
 
 
@@ -162,6 +161,29 @@ def label_quantile(q: float) -> str:
     return f"p{int(round(q * 100)):02d}"
 
 
+def load_checkpoint_for_horizon(
+    models_dir: Path,
+    pollutant: str,
+    horizon: int,
+    device: torch.device,
+) -> tuple[dict[str, Any], Path]:
+    preferred = models_dir / f"lstm_quantile_{pollutant}_h{horizon}.pt"
+    if preferred.exists():
+        return torch.load(preferred, map_location=device), preferred
+
+    legacy = models_dir / f"lstm_quantile_{pollutant}.pt"
+    if legacy.exists():
+        checkpoint = torch.load(legacy, map_location=device)
+        model_horizons = [int(h) for h in checkpoint.get("horizons", ALL_HORIZONS)]
+        if horizon in model_horizons:
+            return checkpoint, legacy
+
+    raise FileNotFoundError(
+        f"Missing model for pollutant={pollutant} horizon=h{horizon}: "
+        f"checked {preferred.name} and {legacy.name}"
+    )
+
+
 def main() -> None:
     args = parse_args()
     logger = setup_logging()
@@ -192,15 +214,39 @@ def main() -> None:
     if region_df.empty:
         raise ValueError(f"No rows available for region={region}")
 
+    pollutants = [p.strip().lower() for p in args.pollutants.split(",") if p.strip()]
+    checkpoint_cache: dict[str, tuple[dict[str, Any], Path]] = {}
+    seq_lens: list[int] = []
+    for pollutant in pollutants:
+        checkpoint, model_path = load_checkpoint_for_horizon(
+            models_dir=models_dir,
+            pollutant=pollutant,
+            horizon=args.horizon,
+            device=device,
+        )
+        model_horizons = [int(h) for h in checkpoint.get("horizons", ALL_HORIZONS)]
+        if args.horizon not in model_horizons:
+            raise ValueError(
+                f"Model {model_path.name} does not support horizon {args.horizon}; "
+                f"available={model_horizons}"
+            )
+        seq_len = int(checkpoint.get("seq_len", 672))
+        if seq_len <= 0:
+            raise ValueError(f"Invalid seq_len={seq_len} in {model_path.name}")
+        checkpoint_cache[pollutant] = (checkpoint, model_path)
+        seq_lens.append(seq_len)
+
+    max_required_seq_len = max(seq_lens) if seq_lens else 1
+
     pos, ts_anchor, ts_note = resolve_anchor_row(region_df, args.timestamp)
-    if pos < MAX_SEQ_LEN:
-        earliest = pd.Timestamp(region_df.iloc[MAX_SEQ_LEN]["timestamp"])
+    if pos < max_required_seq_len:
+        earliest_idx = min(max_required_seq_len, len(region_df) - 1)
+        earliest = pd.Timestamp(region_df.iloc[earliest_idx]["timestamp"])
         raise ValueError(
             f"Not enough history for region={region} at {ts_anchor.isoformat()}. "
-            f"Need at least {MAX_SEQ_LEN} prior rows; earliest eligible anchor is {earliest.isoformat()}"
+            f"Need at least {max_required_seq_len} prior rows; earliest eligible anchor is {earliest.isoformat()}"
         )
 
-    pollutants = [p.strip().lower() for p in args.pollutants.split(",") if p.strip()]
     forecast: dict[str, Any] = {}
 
     logger.info(
@@ -213,20 +259,10 @@ def main() -> None:
     )
 
     for pollutant in pollutants:
-        model_path = models_dir / f"lstm_quantile_{pollutant}.pt"
-        if not model_path.exists():
-            raise FileNotFoundError(
-                f"Missing model for pollutant={pollutant}: {model_path}"
-            )
-
-        checkpoint = torch.load(model_path, map_location=device)
+        checkpoint, model_path = checkpoint_cache[pollutant]
         feature_cols = checkpoint["feature_columns"]
         model_horizons = [int(h) for h in checkpoint.get("horizons", ALL_HORIZONS)]
-        if args.horizon not in model_horizons:
-            raise ValueError(
-                f"Model {model_path.name} does not support horizon {args.horizon}; "
-                f"available={model_horizons}"
-            )
+        seq_len = int(checkpoint.get("seq_len", 672))
 
         missing = [c for c in feature_cols if c not in region_df.columns]
         if missing:
@@ -234,7 +270,7 @@ def main() -> None:
                 f"Input table missing required feature columns for {pollutant}: {missing}"
             )
 
-        window = region_df.iloc[pos - MAX_SEQ_LEN : pos][feature_cols]
+        window = region_df.iloc[pos - seq_len : pos][feature_cols]
         if window.isna().any().any():
             raise ValueError(
                 f"NaN values present in inference window for {pollutant}; cannot run prediction"
@@ -266,7 +302,10 @@ def main() -> None:
             float(q) for q in checkpoint.get("quantiles", [0.05, 0.50, 0.95, 0.99])
         ]
         q_values = pred[h_idx]
-        q_map = {label_quantile(q): float(v) for q, v in zip(q_levels, q_values)}
+        q_map = {
+            label_quantile(q): float(v)
+            for q, v in zip(q_levels, np.maximum.accumulate(q_values))
+        }
 
         p05 = q_map.get("p05")
         p95 = q_map.get("p95")
@@ -279,6 +318,7 @@ def main() -> None:
             "interval_width_p05_p95": interval_width,
             "model_path": str(model_path),
             "model_horizons": model_horizons,
+            "seq_len": int(seq_len),
         }
 
     out = {
@@ -288,7 +328,7 @@ def main() -> None:
         "horizon_hours": int(args.horizon),
         "anchor_timestamp": ts_anchor.isoformat(),
         "forecast_timestamp": (ts_anchor + timedelta(hours=args.horizon)).isoformat(),
-        "history_window_hours": int(MAX_SEQ_LEN),
+        "history_window_hours": int(max_required_seq_len),
         "pollutants": forecast,
     }
     if args.timestamp.strip():

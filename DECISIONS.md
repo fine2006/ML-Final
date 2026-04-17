@@ -43,6 +43,10 @@ Build a production-ready multi-horizon quantile regression forecasting model for
 - **Horizons**: t+1h, t+12h, t+24h, t+7d, t+28d (5 time horizons)
 - **Total outputs per model**: 5 horizons × 4 quantiles = 20 predictions
 
+Current experimental scope (active implementation):
+- Horizons: `h1`, `h24`, `h672`
+- LSTM training mode: separated per `(pollutant, horizon)`
+
 ### 1.3 Research Questions
 1. Can hierarchical LSTM with quantile regression provide calibrated uncertainty estimates?
 2. Does LSTM outperform XGB at long horizons (7d/28d)?
@@ -177,7 +181,7 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 | | - (B) would create 5×4 pollutants=20 models, maintenance nightmare |
 | | - (C) removes horizon-awareness, likely worse performance |
 | **Evidence** | None yet (pre-implementation). Implementation will compare. |
-| **Status** | ✓ APPROVED (waiting for Phase 5 training results) |
+| **Status** | ✓ APPROVED (historical baseline; superseded by 4.13 for current experimental scope) |
 
 ### Decision 4.2: Output Type - Quantile Regression vs Point Predictions
 
@@ -239,19 +243,16 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 
 | Aspect | Details |
 |--------|---------|
-| **Options** | (A) Adaptive: seq_len = 2 × horizon (different per horizon) |
-| | (B) Fixed: seq_len = 672 (max, for all horizons) |
-| | (C) Fixed: seq_len = 24 (short for all) |
-| **Chosen** | (A) Adaptive per horizon |
-| **Rationale** | - t+1h needs 2h lookback; t+28d needs 672h (4 weeks) |
-| | - (B) wastes computation on t+1h (uses 672 vs 2h needed) |
-| | - (C) loses seasonal patterns for t+28d forecast |
-| | - (A) matches lookback to horizon scale, efficient + accurate |
-| | **Sequence lengths**: |
-| | - t+1h → 2h | t+12h → 24h | t+24h → 48h |
-| | - t+7d → 336h | t+28d → 672h |
-| **Implementation** | Each horizon gets separate BiLSTM branch with adapted seq_len |
-| **Evidence** | Logical (longer patterns need longer context). Will validate Phase 5. |
+| **Options** | (A) Pure `2×horizon` adaptive lengths |
+| | (B) Fixed length for all horizons |
+| | (C) Horizon-specific calibrated map for reduced scope |
+| **Chosen** | (C) Horizon-specific calibrated map |
+| **Rationale** | - Reduced scope (`h1`,`h24`,`h672`) allows direct sequence-budget tuning per horizon |
+| | - `h672` needs much longer context than `2×h` baseline used previously, but cannot use annual windows on current val/test split |
+| | - Calibrated map preserves short-horizon efficiency and long-horizon context without collapsing validation samples |
+| | **Sequence lengths (active)**: `h1=168`, `h24=336`, `h672=2402` |
+| **Implementation** | `train_lstm.py` accepts `--seq-len-map`; default map is `1:168,24:336,672:2402` |
+| **Evidence** | Feasibility check: `h672 seq_len=8760` gives zero val/test sequences; `seq_len=2402` keeps all regions populated |
 | **Status** | ✓ APPROVED |
 
 ### Decision 4.6: Weather Features - Lagged vs Current vs Future
@@ -367,7 +368,7 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 | | (B) Adaptive with minimum context floor `max(2×h, min_attn_window)` |
 | **Chosen** | (B) Adaptive + minimum context floor |
 | **Rationale** | - Pure `2×h` gives h1 only 2h tail attention, while XGB uses richer short-horizon lag context |
-| | - This causes unfair short-horizon information budget and weak h1/h12 LSTM robustness |
+| | - This causes unfair short-horizon information budget and weak h1/h24 LSTM robustness |
 | | - Minimum window preserves horizon-adaptive behavior for long horizons while avoiding h1 starvation |
 | **Implementation** | In `train_lstm.py`, attention window now uses `min(max(2*h, min_attn_window), seq_len)` |
 | | New CLI: `--min-attn-window` (default: 24h) |
@@ -385,6 +386,35 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 | | - Weighted objective reduces gradient domination and stabilizes short/mid horizon fit |
 | | - Manual override retained for targeted ablations |
 | **Implementation** | `pinball_loss` now supports horizon weights; CLI adds `--horizon-weighting` and `--horizon-loss-weights` |
+| **Status** | ✓ APPROVED (historical for joint-horizon mode; ignored in separated-horizon mode) |
+
+### Decision 4.13: Horizon-Separated LSTM Training (Scope Reduction)
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Keep single multi-horizon model per pollutant |
+| | (B) Train separated models per `(pollutant, horizon)` |
+| **Chosen** | (B) Separated models |
+| **Rationale** | - Joint optimization across distant horizons caused interference and unstable quality |
+| | - Scope reduction to `h1`, `h24`, `h672` enables cleaner diagnosis and faster iteration |
+| | - Explicit horizon-specialized training gives each horizon dedicated early stopping and checkpointing |
+| **Implementation** | `train_lstm.py` now trains 12 models (`4 pollutants × 3 horizons`) and saves per-horizon checkpoints (`lstm_quantile_<pollutant>_h<h>.pt`) and predictions (`lstm_predictions_<pollutant>_h<h>.npz`) |
+| | `evaluate.py` and `predict.py` load horizon-specific checkpoints first, with legacy fallback |
+| **Status** | ✓ APPROVED (implemented) |
+
+### Decision 4.14: Experimental h672 Sequence Length Cap
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Keep `h672` with `seq_len=672` |
+| | (B) Increase `h672` sequence length aggressively |
+| | (C) Extreme yearly window (`seq_len=8760`) |
+| **Chosen** | (B) with cap `seq_len=2402` |
+| **Rationale** | - User requested larger context for `h672`, but `8760` yields zero val/test sequences on current splits |
+| | - Feasibility check shows practical max with meaningful validation is far below 8760 |
+| | - `2402` keeps all regions populated in train/val/test while substantially expanding long-horizon context |
+| **Implementation** | Horizon sequence defaults now: `h1=168`, `h24=336`, `h672=2402` (overridable by `--seq-len-map`) |
+| **Evidence** | Dataset check on current splits: `h672, seq_len=8760 -> val=0, test=0`; `h672, seq_len=2402 -> train=69799, val=5561, test=5651` sequences |
 | **Status** | ✓ APPROVED (implemented) |
 
 ---
@@ -438,8 +468,8 @@ Source artifacts:
 
 Scope note:
 - Current checkpoint includes `pm25` only.
-- LSTM currently has trained/evaluated horizons `h1`, `h12`.
-- XGB currently has trained/evaluated horizons `h1`, `h12`, `h24`.
+- LSTM currently has trained/evaluated horizons `h1`, `h24`, `h672`.
+- XGB currently has trained/evaluated horizons `h1`, `h24`, `h672`.
 
 ### 6.1 LSTM Quantile Regression (Partial)
 
@@ -482,10 +512,9 @@ RMSE comparison on overlap:
 ```
 
 Checkpoint interpretation:
-- This result profile does not yet match expected long-horizon advantages because
-  `h24/h168/h672` LSTM models are not trained in this checkpoint.
-- Existing LSTM run uses small sequence sample counts (`train=256, val=64, test=64`),
-  so these metrics are smoke-level, not final production evidence.
+- Current metrics in this section are stale and retained for historical context.
+- Active pipeline now uses horizon-separated models on reduced scope (`h1`,`h24`,`h672`),
+  with `h672` experimental context (`seq_len=2402`) and per-horizon checkpoints.
 
 ### 6.4 Per-Region Fairness (Partial)
 
@@ -669,12 +698,14 @@ Region weights for training (calculated):
 | 4.2 | Output type | Quantile regression | ✓ APPROVED | 2 | 4 quantiles per horizon |
 | 4.3 | Preprocessing | Dual pipelines | ✓ APPROVED | 3 | LSTM vs XGB optimized |
 | 4.4 | Loss function | Region-weighted multi-quantile | ✓ APPROVED | 5 | Pinball loss per quantile |
-| 4.5 | Sequence length | Adaptive per horizon | ✓ APPROVED | 3 | 2h to 672h range |
+| 4.5 | Sequence length | Horizon-specific calibrated map | ✓ APPROVED | 5 | h1=168, h24=336, h672=2402 |
 | 4.6 | Weather features | Lagged (t-24 to t-1) | ✓ APPROVED | 3 | No future leakage |
 | 4.7 | Baseline model | XGBoost | ✓ APPROVED | 5 | Fair LSTM comparison |
 | 4.8 | Train/val/test split | 70/15/15 time-based | ✓ APPROVED | 4 | Walk-forward after Phase 4 |
 | 4.9 | Outlier handling | Asymmetric LSTM/XGB | ✓ APPROVED | 3 | LSTM keeps, XGB removes |
 | 4.10 | Batch sampling | Stratified per region | ✓ APPROVED | 5 | Fairness enforcement |
+| 4.13 | LSTM training mode | Separated per horizon | ✓ APPROVED | 5 | 12 models (`4×3`) |
+| 4.14 | h672 context window | seq_len=2402 | ✓ APPROVED | 5 | 8760 infeasible on val/test |
 | 5.1 | Evaluation metrics | CRPS + PIT + RMSE | ✓ APPROVED | 6 | Quantile + accuracy validation |
 | 5.2 | Region fairness | Per-region + weighted | ✓ APPROVED | 6 | Verify imbalance mitigation |
 
@@ -696,8 +727,8 @@ Region weights for training (calculated):
 
 ### 9.3 From Phase 5 (Training)
 - **Finding 1**: Phase 5 scripts (`train_lstm.py`, `train_xgb.py`) are operational and produce model + summary artifacts.
-- **Finding 2**: Current checkpoint training coverage is partial (`pm25`, mostly `h1/h12`), with LSTM sequence sample counts still smoke-scale.
-- **Impact**: Full multi-pollutant, multi-horizon production training remains required before final claims.
+- **Finding 2**: LSTM now trains separated models per `(pollutant,horizon)` on scope `h1,h24,h672`, with configurable `--seq-len-map`.
+- **Impact**: Better horizon isolation, per-horizon early stopping/checkpointing, and faster diagnosis for quality tuning.
 
 ### 9.4 From Phase 6 (Evaluation)
 - **Finding 1**: `scripts/evaluate.py` now computes RMSE/MAE/R2, CRPS-approx, coverage tails, PIT KS test, and per-region fairness, then saves `models/evaluation_summary.json`.

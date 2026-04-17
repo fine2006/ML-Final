@@ -39,7 +39,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.train_lstm import (  # noqa: E402
     ALL_HORIZONS,
     HierarchicalQuantileLSTM,
-    MAX_SEQ_LEN,
     QUANTILES,
 )
 
@@ -70,7 +69,7 @@ class LSTMInferenceDataset(Dataset):
         feature_columns: list[str],
         target_columns: list[str],
         region_mapping: dict[str, int],
-        max_seq_len: int = MAX_SEQ_LEN,
+        max_seq_len: int,
     ):
         self.feature_columns = feature_columns
         self.target_columns = target_columns
@@ -101,8 +100,10 @@ class LSTMInferenceDataset(Dataset):
         feat = self.region_features[region_name]
         targ = self.region_targets[region_name]
 
-        x = feat[end_idx - self.max_seq_len : end_idx]
-        y = targ[end_idx]
+        x = np.array(
+            feat[end_idx - self.max_seq_len : end_idx], dtype=np.float32, copy=True
+        )
+        y = np.array(targ[end_idx], dtype=np.float32, copy=True)
         region_id = self.region_mapping.get(region_name, -1)
 
         return (
@@ -110,6 +111,25 @@ class LSTMInferenceDataset(Dataset):
             torch.from_numpy(y),
             torch.tensor(region_id, dtype=torch.long),
         )
+
+
+def _load_lstm_checkpoint_for_horizon(
+    models_dir: Path,
+    pollutant: str,
+    horizon: int,
+    device: torch.device,
+) -> tuple[dict[str, Any], Path] | tuple[None, None]:
+    preferred = models_dir / f"lstm_quantile_{pollutant}_h{horizon}.pt"
+    if preferred.exists():
+        return torch.load(preferred, map_location=device), preferred
+
+    legacy = models_dir / f"lstm_quantile_{pollutant}.pt"
+    if legacy.exists():
+        checkpoint = torch.load(legacy, map_location=device)
+        ck_horizons = [int(h) for h in checkpoint.get("horizons", [])]
+        if horizon in ck_horizons:
+            return checkpoint, legacy
+    return None, None
 
 
 def setup_logging() -> logging.Logger:
@@ -318,111 +338,155 @@ def evaluate_lstm_models(
     key_records: list[pd.DataFrame] = []
 
     for pollutant in pollutants:
-        model_path = models_dir / f"lstm_quantile_{pollutant}.pt"
-        if not model_path.exists():
-            logger.info("[LSTM %s] model not found: %s", pollutant, model_path.name)
-            continue
-
-        checkpoint = torch.load(model_path, map_location=device)
-        checkpoint_horizons = [int(h) for h in checkpoint.get("horizons", ALL_HORIZONS)]
-        horizons = [h for h in checkpoint_horizons if h in requested_horizons]
-        if not horizons:
-            logger.info("[LSTM %s] no requested horizons available", pollutant)
-            continue
-
-        quantiles = [float(q) for q in checkpoint.get("quantiles", QUANTILES)]
-        feature_cols = checkpoint["feature_columns"]
-        target_cols = [f"target_{pollutant}_h{h}" for h in horizons]
-        missing_targets = [c for c in target_cols if c not in test_df.columns]
-        if missing_targets:
-            logger.warning(
-                "[LSTM %s] missing target columns in test split: %s",
-                pollutant,
-                missing_targets,
-            )
-            continue
-
-        horizon_idx_map = {h: i for i, h in enumerate(checkpoint_horizons)}
-
-        infer_ds = LSTMInferenceDataset(
-            df=test_df,
-            feature_columns=feature_cols,
-            target_columns=target_cols,
-            region_mapping=metadata["region_mapping"],
-            max_seq_len=MAX_SEQ_LEN,
-        )
-        if len(infer_ds) == 0:
-            logger.warning("[LSTM %s] no test sequences available", pollutant)
-            continue
-
-        infer_loader = DataLoader(infer_ds, batch_size=batch_size, shuffle=False)
-
-        model = HierarchicalQuantileLSTM(
-            input_dim=len(feature_cols),
-            hidden_dim=128,
-            num_layers=2,
-            num_heads=4,
-            dropout=0.3,
-            horizons=checkpoint_horizons,
-            quantiles=quantiles,
-            min_attn_window=int(checkpoint.get("min_attn_window", 2)),
-        ).to(device)
-        model.load_state_dict(checkpoint["state_dict"])
-        model.eval()
-
-        preds: list[np.ndarray] = []
-        tgts: list[np.ndarray] = []
-        region_ids: list[np.ndarray] = []
-        with torch.no_grad():
-            for xb, yb, region_id in infer_loader:
-                xb = xb.to(device)
-                pred = model(xb).cpu().numpy()
-                preds.append(pred)
-                tgts.append(yb.numpy())
-                region_ids.append(region_id.numpy())
-
-        pred_all = np.concatenate(preds, axis=0)
-        tgt_all = np.concatenate(tgts, axis=0)
-        region_id_all = np.concatenate(region_ids, axis=0)
-        key_df = pd.DataFrame(infer_ds.keys, columns=["region", "timestamp"])
-        key_df["timestamp"] = pd.to_datetime(
-            key_df["timestamp"], errors="coerce"
-        ).dt.floor("h")
-        region_name_all = np.array(
-            [region_name_by_id.get(int(r), str(int(r))) for r in region_id_all],
-            dtype=object,
-        )
-
         by_horizon: dict[str, Any] = {}
         pred_by_h: dict[int, np.ndarray] = {}
         tgt_by_h: dict[int, np.ndarray] = {}
         region_by_h: dict[int, np.ndarray] = {}
         ts_by_h: dict[int, np.ndarray] = {}
         pit_by_h: dict[int, np.ndarray] = {}
+        model_paths: dict[str, str] = {}
+        sample_count_by_horizon: dict[str, int] = {}
+        quantiles_ref: list[float] | None = None
 
-        pred_eval = np.stack(
-            [pred_all[:, horizon_idx_map[h], :] for h in horizons],
-            axis=1,
-        )
+        all_sq_err: list[np.ndarray] = []
+        all_abs_err: list[np.ndarray] = []
+        all_crps_terms: list[np.ndarray] = []
 
-        q_idx = {q: i for i, q in enumerate(quantiles)}
-        p50 = pred_eval[:, :, q_idx[0.50]]
+        for horizon in requested_horizons:
+            checkpoint, model_path = _load_lstm_checkpoint_for_horizon(
+                models_dir=models_dir,
+                pollutant=pollutant,
+                horizon=horizon,
+                device=device,
+            )
+            if checkpoint is None or model_path is None:
+                logger.info("[LSTM %s h%d] model not found", pollutant, horizon)
+                continue
 
-        for i, horizon in enumerate(horizons):
-            y_h = tgt_all[:, i]
-            pred_h = pred_eval[:, i, :]
+            checkpoint_horizons = [
+                int(h) for h in checkpoint.get("horizons", [int(horizon)])
+            ]
+            if horizon not in checkpoint_horizons:
+                logger.info(
+                    "[LSTM %s h%d] checkpoint horizons=%s; skipping",
+                    pollutant,
+                    horizon,
+                    checkpoint_horizons,
+                )
+                continue
+
+            quantiles = [float(q) for q in checkpoint.get("quantiles", QUANTILES)]
+            if quantiles_ref is None:
+                quantiles_ref = quantiles
+            elif quantiles != quantiles_ref:
+                logger.warning(
+                    "[LSTM %s h%d] quantiles mismatch (%s vs %s); skipping",
+                    pollutant,
+                    horizon,
+                    quantiles,
+                    quantiles_ref,
+                )
+                continue
+
+            feature_cols = checkpoint["feature_columns"]
+            target_col = f"target_{pollutant}_h{horizon}"
+            if target_col not in test_df.columns:
+                logger.warning(
+                    "[LSTM %s h%d] missing target column in test split: %s",
+                    pollutant,
+                    horizon,
+                    target_col,
+                )
+                continue
+
+            seq_len = int(checkpoint.get("seq_len", 672))
+            if seq_len <= 0:
+                logger.warning(
+                    "[LSTM %s h%d] invalid seq_len=%d in checkpoint; skipping",
+                    pollutant,
+                    horizon,
+                    seq_len,
+                )
+                continue
+
+            infer_ds = LSTMInferenceDataset(
+                df=test_df,
+                feature_columns=feature_cols,
+                target_columns=[target_col],
+                region_mapping=metadata["region_mapping"],
+                max_seq_len=seq_len,
+            )
+            if len(infer_ds) == 0:
+                logger.warning(
+                    "[LSTM %s h%d] no test sequences available for seq_len=%d",
+                    pollutant,
+                    horizon,
+                    seq_len,
+                )
+                continue
+
+            infer_loader = DataLoader(infer_ds, batch_size=batch_size, shuffle=False)
+
+            model = HierarchicalQuantileLSTM(
+                input_dim=len(feature_cols),
+                hidden_dim=128,
+                num_layers=2,
+                num_heads=4,
+                dropout=0.3,
+                horizons=checkpoint_horizons,
+                quantiles=quantiles,
+                min_attn_window=int(checkpoint.get("min_attn_window", 2)),
+            ).to(device)
+            model.load_state_dict(checkpoint["state_dict"])
+            model.eval()
+
+            preds: list[np.ndarray] = []
+            tgts: list[np.ndarray] = []
+            region_ids: list[np.ndarray] = []
+            with torch.no_grad():
+                for xb, yb, region_id in infer_loader:
+                    xb = xb.to(device)
+                    pred = model(xb).cpu().numpy()
+                    preds.append(pred)
+                    tgts.append(yb.numpy())
+                    region_ids.append(region_id.numpy())
+
+            pred_all = np.concatenate(preds, axis=0)
+            tgt_all = np.concatenate(tgts, axis=0)
+            region_id_all = np.concatenate(region_ids, axis=0)
+            key_df = pd.DataFrame(infer_ds.keys, columns=["region", "timestamp"])
+            key_df["timestamp"] = pd.to_datetime(
+                key_df["timestamp"], errors="coerce"
+            ).dt.floor("h")
+            region_name_all = np.array(
+                [region_name_by_id.get(int(r), str(int(r))) for r in region_id_all],
+                dtype=object,
+            )
+
+            horizon_idx = checkpoint_horizons.index(horizon)
+            y_h = tgt_all[:, 0]
+            pred_h = pred_all[:, horizon_idx, :]
             metrics_h, pit_h = compute_horizon_metrics(
                 y_true=y_h,
                 pred_q=pred_h,
                 regions=region_name_all,
                 quantiles=quantiles,
             )
+
             by_horizon[f"h{horizon}"] = metrics_h
             pred_by_h[horizon] = pred_h
             tgt_by_h[horizon] = y_h
             region_by_h[horizon] = region_name_all
             ts_by_h[horizon] = key_df["timestamp"].to_numpy(copy=True)
             pit_by_h[horizon] = pit_h
+            model_paths[f"h{horizon}"] = str(model_path)
+            sample_count_by_horizon[f"h{horizon}"] = int(len(y_h))
+
+            q_idx = {q: i for i, q in enumerate(quantiles)}
+            p50 = pred_h[:, q_idx[0.50]]
+            all_sq_err.append((y_h - p50) ** 2)
+            all_abs_err.append(np.abs(y_h - p50))
+            all_crps_terms.append(np.abs(pred_h - y_h[:, None]).ravel())
 
             key_records.append(
                 pd.DataFrame(
@@ -436,37 +500,44 @@ def evaluate_lstm_models(
                 )
             )
 
+            logger.info(
+                "[LSTM %s h%d] evaluated sample_count=%d seq_len=%d",
+                pollutant,
+                horizon,
+                len(y_h),
+                seq_len,
+            )
+
+        if not by_horizon:
+            logger.info("[LSTM %s] no requested horizons available", pollutant)
+            continue
+
+        sq = np.concatenate(all_sq_err)
+        abs_err = np.concatenate(all_abs_err)
+        crps_terms = np.concatenate(all_crps_terms)
+        available_horizons = sorted(pred_by_h.keys())
+
         summary["pollutants"][pollutant] = {
-            "model_path": str(model_path),
-            "sample_count": int(len(pred_all)),
-            "horizons": horizons,
-            "quantiles": quantiles,
-            "overall_rmse_p50": float(
-                np.sqrt(mean_squared_error(tgt_all.ravel(), p50.ravel()))
-            ),
-            "overall_mae_p50": float(mean_absolute_error(tgt_all.ravel(), p50.ravel())),
-            "overall_crps_approx": float(
-                np.mean(np.abs(pred_eval - tgt_all[:, :, None]))
-            ),
+            "model_paths": model_paths,
+            "sample_count_total": int(sum(sample_count_by_horizon.values())),
+            "sample_count_by_horizon": sample_count_by_horizon,
+            "horizons": available_horizons,
+            "quantiles": quantiles_ref if quantiles_ref is not None else QUANTILES,
+            "overall_rmse_p50": float(np.sqrt(np.mean(sq))),
+            "overall_mae_p50": float(np.mean(abs_err)),
+            "overall_crps_approx": float(np.mean(crps_terms)),
             "by_horizon": by_horizon,
         }
 
         payloads[pollutant] = QuantilePayload(
             pollutant=pollutant,
-            horizons=horizons,
-            quantiles=quantiles,
+            horizons=available_horizons,
+            quantiles=quantiles_ref if quantiles_ref is not None else QUANTILES,
             predictions=pred_by_h,
             targets=tgt_by_h,
             regions=region_by_h,
             timestamps=ts_by_h,
             metrics={"by_horizon": by_horizon, "pit": pit_by_h},
-        )
-
-        logger.info(
-            "[LSTM %s] evaluated horizons=%s sample_count=%d",
-            pollutant,
-            horizons,
-            len(pred_all),
         )
 
     keys_df = (

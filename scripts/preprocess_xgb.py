@@ -50,7 +50,7 @@ WEATHER = ["temperature", "humidity", "wind_speed", "wind_direction"]
 LAGS = [1, 3, 6, 12, 24, 48, 168]
 WEATHER_LAGS = [1, 6, 12, 24]
 ROLLING_WINDOWS = [6, 12, 24]
-HORIZONS = [1, 12, 24, 168, 672]
+HORIZONS = [1, 24, 672]
 
 
 def setup_logging() -> logging.Logger:

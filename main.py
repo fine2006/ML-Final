@@ -44,11 +44,29 @@ def print_training_snapshot() -> None:
     if lstm_summary:
         print("\n[LSTM]")
         for pollutant, payload in lstm_summary.get("pollutants", {}).items():
-            test = payload.get("test_metrics", {})
-            print(
-                f"  {pollutant}: RMSE(p50)={test.get('overall_rmse_p50', float('nan')):.4f} "
-                f"CRPS={test.get('overall_crps_approx', float('nan')):.4f}"
-            )
+            if isinstance(payload, dict) and "test_metrics" in payload:
+                test = payload.get("test_metrics", {})
+                print(
+                    f"  {pollutant}: "
+                    f"RMSE(p50)={test.get('overall_rmse_p50', float('nan')):.4f} "
+                    f"CRPS={test.get('overall_crps_approx', float('nan')):.4f}"
+                )
+                continue
+
+            for key in sorted(payload.keys()):
+                if not str(key).startswith("h"):
+                    continue
+                h_payload = payload.get(key, {})
+                if not isinstance(h_payload, dict):
+                    continue
+                test = h_payload.get("test_metrics", {})
+                horizon = h_payload.get("horizon")
+                seq_len = h_payload.get("seq_len")
+                print(
+                    f"  {pollutant} h{horizon} (seq={seq_len}): "
+                    f"RMSE(p50)={test.get('overall_rmse_p50', float('nan')):.4f} "
+                    f"CRPS={test.get('overall_crps_approx', float('nan')):.4f}"
+                )
     else:
         print("\n[LSTM] summary not found")
 
@@ -92,7 +110,7 @@ def print_evaluation_snapshot() -> None:
         horizon = int(row.get("horizon"))
         by_key[(pollutant, horizon)] = row
 
-    preferred_horizons = [24, 12, 1, 168, 672]
+    preferred_horizons = [24, 1, 672]
     shown = 0
     for (pollutant, horizon), row in sorted(by_key.items()):
         if horizon not in preferred_horizons:
@@ -166,7 +184,7 @@ def main() -> None:
     parser.add_argument(
         "--horizons",
         type=str,
-        default="1,12,24,168,672",
+        default="1,24,672",
         help="Comma-separated horizons in hours",
     )
     parser.add_argument(
@@ -186,6 +204,12 @@ def main() -> None:
         type=int,
         default=None,
         help="Optional cap for LSTM test sequence samples",
+    )
+    parser.add_argument(
+        "--lstm-seq-len-map",
+        type=str,
+        default="",
+        help="Optional LSTM horizon:seq_len map, e.g. 1:168,24:336,672:2402",
     )
     parser.add_argument("--fair-bench", action="store_true")
     parser.add_argument("--predict-only", action="store_true")
@@ -276,6 +300,8 @@ def main() -> None:
             lstm_cmd.extend(["--max-val-samples", str(args.lstm_max_val_samples)])
         if args.lstm_max_test_samples is not None:
             lstm_cmd.extend(["--max-test-samples", str(args.lstm_max_test_samples)])
+        if args.lstm_seq_len_map.strip():
+            lstm_cmd.extend(["--seq-len-map", args.lstm_seq_len_map])
         run_cmd(uv_run(lstm_cmd))
 
         run_cmd(

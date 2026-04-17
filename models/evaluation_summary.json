@@ -1,20 +1,31 @@
 {
-  "created_at": "2026-04-17T01:09:43.739328",
+  "created_at": "2026-04-17T09:34:30.294740",
   "pollutants_requested": [
     "pm25"
   ],
   "horizons_requested": [
     1,
-    12
+    24,
+    672
   ],
   "lstm": {
     "pollutants": {
       "pm25": {
-        "model_path": "/var/home/fine/AI-slop/ML-Final/models/lstm_quantile_pm25.pt",
-        "sample_count": 12571,
+        "model_paths": {
+          "h1": "/var/home/fine/AI-slop/ML-Final/models/lstm_quantile_pm25_h1.pt",
+          "h24": "/var/home/fine/AI-slop/ML-Final/models/lstm_quantile_pm25_h24.pt",
+          "h672": "/var/home/fine/AI-slop/ML-Final/models/lstm_quantile_pm25_h672.pt"
+        },
+        "sample_count_total": 34153,
+        "sample_count_by_horizon": {
+          "h1": 14587,
+          "h24": 13915,
+          "h672": 5651
+        },
         "horizons": [
           1,
-          12
+          24,
+          672
         ],
         "quantiles": [
           0.05,
@@ -22,106 +33,155 @@
           0.95,
           0.99
         ],
-        "overall_rmse_p50": 11.621957032010842,
-        "overall_mae_p50": 6.90174674987793,
-        "overall_crps_approx": 18.335405349731445,
+        "overall_rmse_p50": 28.807851791381836,
+        "overall_mae_p50": 21.325443267822266,
+        "overall_crps_approx": 21.31331443786621,
         "by_horizon": {
           "h1": {
-            "rmse": 10.154747860669389,
-            "mae": 5.335373878479004,
-            "r2": 0.663617730140686,
-            "crps_approx": 15.249781608581543,
-            "coverage_p05_p95": 0.8454379126561132,
-            "tail_below_p05": 0.10468538700182961,
-            "tail_above_p95": 0.049876700342057115,
-            "tail_above_p99": 0.010102617134675045,
-            "interval_width_p05_p95": 23.358253479003906,
-            "quantile_crossing_rate": 0.0,
-            "pit_ks_stat": 0.1337599754333496,
+            "rmse": 24.884073260838573,
+            "mae": 18.26828384399414,
+            "r2": -1.1689748764038086,
+            "crps_approx": 18.086132049560547,
+            "coverage_p05_p95": 0.0,
+            "tail_below_p05": 0.004661685062041544,
+            "tail_above_p95": 1.0,
+            "tail_above_p99": 0.9987660245424008,
+            "interval_width_p05_p95": -0.2410815954208374,
+            "quantile_crossing_rate": 1.0,
+            "pit_ks_stat": 0.9953383151441813,
             "pit_pvalue": 0.0,
             "by_region": {
               "AIIMS": {
-                "rmse": 11.709951123820527,
-                "mae": 7.287520408630371,
-                "crps_approx": 12.86381721496582,
-                "coverage_p05_p95": 0.7943240768996033,
-                "count": 3277
+                "rmse": 25.02896027682857,
+                "mae": 17.93896484375,
+                "crps_approx": 17.758682250976562,
+                "coverage_p05_p95": 0.0,
+                "count": 3781
               },
               "Bhatagaon": {
-                "rmse": 11.446079059227143,
-                "mae": 4.703752517700195,
-                "crps_approx": 13.736130714416504,
-                "coverage_p05_p95": 0.8072575847709696,
-                "count": 3362
+                "rmse": 20.970294832950238,
+                "mae": 14.427454948425293,
+                "crps_approx": 14.245218276977539,
+                "coverage_p05_p95": 0.0,
+                "count": 3866
               },
               "IGKV": {
-                "rmse": 5.013227133200979,
-                "mae": 3.466172456741333,
-                "crps_approx": 14.536163330078125,
-                "coverage_p05_p95": 0.8755555555555555,
-                "count": 2925
+                "rmse": 20.8687120664057,
+                "mae": 16.036380767822266,
+                "crps_approx": 15.853694915771484,
+                "coverage_p05_p95": 0.0,
+                "count": 3429
               },
               "SILTARA": {
-                "rmse": 10.523045997728628,
-                "mae": 5.732360363006592,
-                "crps_approx": 20.23648452758789,
-                "coverage_p05_p95": 0.9145327569005653,
-                "count": 3007
+                "rmse": 31.439816095721877,
+                "mae": 25.03188705444336,
+                "crps_approx": 24.848329544067383,
+                "coverage_p05_p95": 0.0,
+                "count": 3511
               }
             },
             "fairness": {
-              "rmse_max_min_ratio": 2.3358110080968237,
-              "rmse_max": 11.709951123820527,
-              "rmse_min": 5.013227133200979
+              "rmse_max_min_ratio": 1.506552776025573,
+              "rmse_max": 31.439816095721877,
+              "rmse_min": 20.8687120664057
             }
           },
-          "h12": {
-            "rmse": 12.923654417611893,
-            "mae": 8.468121528625488,
-            "r2": 0.4588542580604553,
-            "crps_approx": 21.4210262298584,
-            "coverage_p05_p95": 0.7958794049797152,
-            "tail_below_p05": 0.15448253917747196,
-            "tail_above_p95": 0.04963805584281282,
-            "tail_above_p99": 0.008909394638453584,
-            "interval_width_p05_p95": 32.0206184387207,
-            "quantile_crossing_rate": 0.0,
-            "pit_ks_stat": 0.19394534826278687,
+          "h24": {
+            "rmse": 25.123220504069412,
+            "mae": 18.375350952148438,
+            "r2": -1.150087833404541,
+            "crps_approx": 18.492565155029297,
+            "coverage_p05_p95": 0.0,
+            "tail_below_p05": 0.001221703197987783,
+            "tail_above_p95": 1.0,
+            "tail_above_p99": 1.0,
+            "interval_width_p05_p95": -0.12808750569820404,
+            "quantile_crossing_rate": 1.0,
+            "pit_ks_stat": 0.9985627020942047,
             "pit_pvalue": 0.0,
             "by_region": {
               "AIIMS": {
-                "rmse": 14.144209770925533,
-                "mae": 9.478170394897461,
-                "crps_approx": 19.50371742248535,
-                "coverage_p05_p95": 0.7488556606652426,
-                "count": 3277
+                "rmse": 25.761953005473984,
+                "mae": 18.54450035095215,
+                "crps_approx": 18.66248321533203,
+                "coverage_p05_p95": 0.0,
+                "count": 3613
               },
               "Bhatagaon": {
-                "rmse": 12.65753272820675,
-                "mae": 7.249632835388184,
-                "crps_approx": 18.671833038330078,
-                "coverage_p05_p95": 0.7914931588340274,
-                "count": 3362
+                "rmse": 21.325285267682748,
+                "mae": 14.612054824829102,
+                "crps_approx": 14.728506088256836,
+                "coverage_p05_p95": 0.0,
+                "count": 3698
               },
               "IGKV": {
-                "rmse": 10.453083397478872,
-                "mae": 7.762254238128662,
-                "crps_approx": 20.864347457885742,
-                "coverage_p05_p95": 0.7784615384615384,
-                "count": 2925
+                "rmse": 21.230195993533084,
+                "mae": 16.19753074645996,
+                "crps_approx": 16.31436538696289,
+                "coverage_p05_p95": 0.0,
+                "count": 3261
               },
               "SILTARA": {
-                "rmse": 13.957324789629391,
-                "mae": 9.416337966918945,
-                "crps_approx": 27.125747680664062,
-                "coverage_p05_p95": 0.8689723977386099,
-                "count": 3007
+                "rmse": 31.100150487603152,
+                "mae": 24.479873657226562,
+                "crps_approx": 24.597461700439453,
+                "coverage_p05_p95": 0.0,
+                "count": 3343
               }
             },
             "fairness": {
-              "rmse_max_min_ratio": 1.3531136443756782,
-              "rmse_max": 14.144209770925533,
-              "rmse_min": 10.453083397478872
+              "rmse_max_min_ratio": 1.464901713440448,
+              "rmse_max": 31.100150487603152,
+              "rmse_min": 21.230195993533084
+            }
+          },
+          "h672": {
+            "rmse": 43.162816017070035,
+            "mae": 36.481224060058594,
+            "r2": -2.500814914703369,
+            "crps_approx": 36.58949279785156,
+            "coverage_p05_p95": 0.0,
+            "tail_below_p05": 0.0005308794903556893,
+            "tail_above_p95": 1.0,
+            "tail_above_p99": 1.0,
+            "interval_width_p05_p95": -0.05815647915005684,
+            "quantile_crossing_rate": 1.0,
+            "pit_ks_stat": 0.9992921606753953,
+            "pit_pvalue": 0.0,
+            "by_region": {
+              "AIIMS": {
+                "rmse": 46.145556162166095,
+                "mae": 38.415138244628906,
+                "crps_approx": 38.5236701965332,
+                "coverage_p05_p95": 0.0,
+                "count": 1547
+              },
+              "Bhatagaon": {
+                "rmse": 34.02810943095888,
+                "mae": 29.800249099731445,
+                "crps_approx": 29.908409118652344,
+                "coverage_p05_p95": 0.0,
+                "count": 1632
+              },
+              "IGKV": {
+                "rmse": 38.06404739516756,
+                "mae": 34.87498474121094,
+                "crps_approx": 34.98356246948242,
+                "coverage_p05_p95": 0.0,
+                "count": 1195
+              },
+              "SILTARA": {
+                "rmse": 53.18854196247299,
+                "mae": 44.17976760864258,
+                "crps_approx": 44.28756332397461,
+                "coverage_p05_p95": 0.0,
+                "count": 1277
+              }
+            },
+            "fairness": {
+              "rmse_max_min_ratio": 1.563076610835214,
+              "rmse_max": 53.18854196247299,
+              "rmse_min": 34.02810943095888
             }
           }
         }
@@ -134,7 +194,8 @@
       "pm25": {
         "horizons": [
           1,
-          12
+          24,
+          672
         ],
         "quantiles": [
           0.05,
@@ -144,101 +205,150 @@
         ],
         "by_horizon": {
           "h1": {
-            "rmse": 6.711105184713839,
-            "mae": 2.645540237426758,
-            "r2": 0.8418267965316772,
-            "crps_approx": 7.0664896965026855,
-            "coverage_p05_p95": 0.8230854880613634,
-            "tail_below_p05": 0.11258196214276878,
-            "tail_above_p95": 0.06594086354076457,
-            "tail_above_p99": 0.028454781640480018,
-            "interval_width_p05_p95": 11.15225887298584,
-            "quantile_crossing_rate": 0.15650129902264012,
-            "pit_ks_stat": 0.1617276668548584,
+            "rmse": 13.44720080435539,
+            "mae": 9.892229080200195,
+            "r2": 0.36494898796081543,
+            "crps_approx": 39.34652328491211,
+            "coverage_p05_p95": 0.8761598416429544,
+            "tail_below_p05": 0.11907707534331313,
+            "tail_above_p95": 0.004763083013732525,
+            "tail_above_p99": 0.0010515897562786095,
+            "interval_width_p05_p95": 62.940128326416016,
+            "quantile_crossing_rate": 0.0,
+            "pit_ks_stat": 0.32107406854629517,
             "pit_pvalue": 0.0,
             "by_region": {
               "AIIMS": {
-                "rmse": 5.1026107388805455,
-                "mae": 2.6914284229278564,
-                "crps_approx": 7.041589260101318,
-                "coverage_p05_p95": 0.7992087042532147,
+                "rmse": 13.351586499759003,
+                "mae": 10.589158058166504,
+                "crps_approx": 39.73039627075195,
+                "coverage_p05_p95": 0.8414935707220573,
                 "count": 4044
               },
               "Bhatagaon": {
-                "rmse": 10.001203464570956,
-                "mae": 3.114051580429077,
-                "crps_approx": 7.979516983032227,
-                "coverage_p05_p95": 0.8056519583539911,
+                "rmse": 15.470563932470977,
+                "mae": 11.260804176330566,
+                "crps_approx": 40.83671951293945,
+                "coverage_p05_p95": 0.8215171046108082,
                 "count": 4034
               },
               "IGKV": {
-                "rmse": 2.85049025351145,
-                "mae": 1.7143806219100952,
-                "crps_approx": 5.103352069854736,
-                "coverage_p05_p95": 0.8560830860534124,
+                "rmse": 10.746906988834516,
+                "mae": 9.132844924926758,
+                "crps_approx": 39.26502227783203,
+                "coverage_p05_p95": 0.8738872403560831,
                 "count": 4044
               },
               "SILTARA": {
-                "rmse": 6.7901165213158805,
-                "mae": 3.063459634780884,
-                "crps_approx": 8.143758773803711,
-                "coverage_p05_p95": 0.83135509396637,
+                "rmse": 13.796895460241059,
+                "mae": 8.589493751525879,
+                "crps_approx": 37.55764389038086,
+                "coverage_p05_p95": 0.9676063303659743,
                 "count": 4044
               }
             },
             "fairness": {
-              "rmse_max_min_ratio": 3.5085906546253636,
-              "rmse_max": 10.001203464570956,
-              "rmse_min": 2.85049025351145
+              "rmse_max_min_ratio": 1.43953641252726,
+              "rmse_max": 15.470563932470977,
+              "rmse_min": 10.746906988834516
             }
           },
-          "h12": {
-            "rmse": 11.644248859163936,
-            "mae": 7.2647600173950195,
-            "r2": 0.5181334018707275,
-            "crps_approx": 17.29766082763672,
-            "coverage_p05_p95": 0.754979586787084,
-            "tail_below_p05": 0.17957441543981195,
-            "tail_above_p95": 0.06754917728566126,
-            "tail_above_p99": 0.016268712111839664,
-            "interval_width_p05_p95": 25.20946502685547,
-            "quantile_crossing_rate": 0.1050352591859458,
-            "pit_ks_stat": 0.18432974815368652,
+          "h24": {
+            "rmse": 14.618863897055236,
+            "mae": 11.1537446975708,
+            "r2": 0.24314218759536743,
+            "crps_approx": 42.18304443359375,
+            "coverage_p05_p95": 0.88160336508722,
+            "tail_below_p05": 0.1102313497463813,
+            "tail_above_p95": 0.008165285166398615,
+            "tail_above_p99": 0.0011134479772361746,
+            "interval_width_p05_p95": 64.8408203125,
+            "quantile_crossing_rate": 0.0,
+            "pit_ks_stat": 0.29841744899749756,
             "pit_pvalue": 0.0,
             "by_region": {
               "AIIMS": {
-                "rmse": 10.89575739895465,
-                "mae": 7.214816570281982,
-                "crps_approx": 14.55526351928711,
-                "coverage_p05_p95": 0.6938674579624134,
+                "rmse": 14.795235274114646,
+                "mae": 11.882784843444824,
+                "crps_approx": 41.303226470947266,
+                "coverage_p05_p95": 0.8422354104846687,
                 "count": 4044
               },
               "Bhatagaon": {
-                "rmse": 13.485832975387137,
-                "mae": 7.331551551818848,
-                "crps_approx": 16.586788177490234,
-                "coverage_p05_p95": 0.7558254833911751,
+                "rmse": 16.04940036117004,
+                "mae": 12.016510963439941,
+                "crps_approx": 42.29240417480469,
+                "coverage_p05_p95": 0.83961328705999,
                 "count": 4034
               },
               "IGKV": {
-                "rmse": 8.73820834583468,
-                "mae": 5.957719802856445,
-                "crps_approx": 13.103340148925781,
-                "coverage_p05_p95": 0.7561819980217607,
+                "rmse": 12.200099281782569,
+                "mae": 10.329645156860352,
+                "crps_approx": 40.851566314697266,
+                "coverage_p05_p95": 0.8835311572700296,
                 "count": 4044
               },
               "SILTARA": {
-                "rmse": 12.865729985377458,
-                "mae": 8.555118560791016,
-                "crps_approx": 24.943500518798828,
-                "coverage_p05_p95": 0.8140454995054401,
+                "rmse": 15.15349977060915,
+                "mae": 10.388171195983887,
+                "crps_approx": 44.28524398803711,
+                "coverage_p05_p95": 0.9609297725024728,
                 "count": 4044
               }
             },
             "fairness": {
-              "rmse_max_min_ratio": 1.5433178566651538,
-              "rmse_max": 13.485832975387137,
-              "rmse_min": 8.73820834583468
+              "rmse_max_min_ratio": 1.3155139143117731,
+              "rmse_max": 16.04940036117004,
+              "rmse_min": 12.200099281782569
+            }
+          },
+          "h672": {
+            "rmse": 18.613614487441964,
+            "mae": 14.41652774810791,
+            "r2": 0.14522254467010498,
+            "crps_approx": 46.786827087402344,
+            "coverage_p05_p95": 0.8879747618458493,
+            "tail_below_p05": 0.09643696647284423,
+            "tail_above_p95": 0.015588271681306446,
+            "tail_above_p99": 0.0011134479772361746,
+            "interval_width_p05_p95": 73.5103759765625,
+            "quantile_crossing_rate": 0.0,
+            "pit_ks_stat": 0.2761304974555969,
+            "pit_pvalue": 0.0,
+            "by_region": {
+              "AIIMS": {
+                "rmse": 19.50030439090351,
+                "mae": 15.236295700073242,
+                "crps_approx": 45.765106201171875,
+                "coverage_p05_p95": 0.8798219584569733,
+                "count": 4044
+              },
+              "Bhatagaon": {
+                "rmse": 18.111253037055874,
+                "mae": 14.811446189880371,
+                "crps_approx": 46.89033508300781,
+                "coverage_p05_p95": 0.8557263262270699,
+                "count": 4034
+              },
+              "IGKV": {
+                "rmse": 14.560169999524012,
+                "mae": 12.249398231506348,
+                "crps_approx": 43.52586364746094,
+                "coverage_p05_p95": 0.8874876360039565,
+                "count": 4044
+              },
+              "SILTARA": {
+                "rmse": 21.57644900940534,
+                "mae": 15.369951248168945,
+                "crps_approx": 50.96627426147461,
+                "coverage_p05_p95": 0.9287833827893175,
+                "count": 4044
+              }
+            },
+            "fairness": {
+              "rmse_max_min_ratio": 1.4818816682848277,
+              "rmse_max": 21.57644900940534,
+              "rmse_min": 14.560169999524012
             }
           }
         }
@@ -250,28 +360,42 @@
     {
       "pollutant": "pm25",
       "horizon": 1,
-      "lstm_rmse": 10.154747860669389,
-      "xgb_rmse": 6.711105184713839,
-      "rmse_improvement_pct": -51.31260174254572,
-      "lstm_crps": 15.249781608581543,
-      "xgb_crps": 7.0664896965026855,
-      "crps_improvement_pct": -115.80420072117128,
-      "lstm_coverage": 0.8454379126561132,
-      "xgb_coverage": 0.8230854880613634,
+      "lstm_rmse": 24.884073260838573,
+      "xgb_rmse": 13.44720080435539,
+      "rmse_improvement_pct": -85.05020950366796,
+      "lstm_crps": 18.086132049560547,
+      "xgb_crps": 39.34652328491211,
+      "crps_improvement_pct": 54.03372257671394,
+      "lstm_coverage": 0.0,
+      "xgb_coverage": 0.8761598416429544,
       "lstm_pit_pvalue": 0.0,
       "xgb_pit_pvalue": 0.0
     },
     {
       "pollutant": "pm25",
-      "horizon": 12,
-      "lstm_rmse": 12.923654417611893,
-      "xgb_rmse": 11.644248859163936,
-      "rmse_improvement_pct": -10.987446025263145,
-      "lstm_crps": 21.4210262298584,
-      "xgb_crps": 17.29766082763672,
-      "crps_improvement_pct": -23.837705244131737,
-      "lstm_coverage": 0.7958794049797152,
-      "xgb_coverage": 0.754979586787084,
+      "horizon": 24,
+      "lstm_rmse": 25.123220504069412,
+      "xgb_rmse": 14.618863897055236,
+      "rmse_improvement_pct": -71.8548081505166,
+      "lstm_crps": 18.492565155029297,
+      "xgb_crps": 42.18304443359375,
+      "crps_improvement_pct": 56.16114151234144,
+      "lstm_coverage": 0.0,
+      "xgb_coverage": 0.88160336508722,
+      "lstm_pit_pvalue": 0.0,
+      "xgb_pit_pvalue": 0.0
+    },
+    {
+      "pollutant": "pm25",
+      "horizon": 672,
+      "lstm_rmse": 43.162816017070035,
+      "xgb_rmse": 18.613614487441964,
+      "rmse_improvement_pct": -131.88841719157054,
+      "lstm_crps": 36.58949279785156,
+      "xgb_crps": 46.786827087402344,
+      "crps_improvement_pct": 21.795310612752537,
+      "lstm_coverage": 0.0,
+      "xgb_coverage": 0.8879747618458493,
       "lstm_pit_pvalue": 0.0,
       "xgb_pit_pvalue": 0.0
     }
@@ -281,40 +405,59 @@
     {
       "pollutant": "pm25",
       "horizon": 1,
-      "n_common": 12571,
-      "lstm_rmse": 10.154747860669389,
-      "xgb_rmse": 6.354951637018011,
-      "rmse_improvement_pct": -59.79268514833874,
-      "lstm_crps": 15.249781608581543,
-      "xgb_crps": 7.286360740661621,
-      "crps_improvement_pct": -109.29215765395692,
-      "lstm_coverage": 0.8454379126561132,
-      "xgb_coverage": 0.8429719194972556,
-      "lstm_pit_ks": 0.1337599754333496,
-      "xgb_pit_ks": 0.17257803678512573,
+      "n_common": 14587,
+      "lstm_rmse": 24.884073260838573,
+      "xgb_rmse": 13.392219083573188,
+      "rmse_improvement_pct": -85.80993265978766,
+      "lstm_crps": 18.086132049560547,
+      "xgb_crps": 39.46751403808594,
+      "crps_improvement_pct": 54.17463579766507,
+      "lstm_coverage": 0.0,
+      "xgb_coverage": 0.866662096387194,
+      "lstm_pit_ks": 0.9953383151441813,
+      "xgb_pit_ks": 0.3188812732696533,
       "lstm_pit_pvalue": 0.0,
       "xgb_pit_pvalue": 0.0,
-      "lstm_fairness_ratio": 2.3358110080968237,
-      "xgb_fairness_ratio": 2.7415314920261205
+      "lstm_fairness_ratio": 1.506552776025573,
+      "xgb_fairness_ratio": 1.2749432280165873
     },
     {
       "pollutant": "pm25",
-      "horizon": 12,
-      "n_common": 12571,
-      "lstm_rmse": 12.923654417611893,
-      "xgb_rmse": 11.909736022842365,
-      "rmse_improvement_pct": -8.513357414680522,
-      "lstm_crps": 21.4210262298584,
-      "xgb_crps": 17.964792251586914,
-      "crps_improvement_pct": -19.238930959338976,
-      "lstm_coverage": 0.7958794049797152,
-      "xgb_coverage": 0.7563439662715774,
-      "lstm_pit_ks": 0.19394534826278687,
-      "xgb_pit_ks": 0.18537920713424683,
+      "horizon": 24,
+      "n_common": 13915,
+      "lstm_rmse": 25.123220504069412,
+      "xgb_rmse": 14.74778963758081,
+      "rmse_improvement_pct": -70.35244685108324,
+      "lstm_crps": 18.492565155029297,
+      "xgb_crps": 42.203826904296875,
+      "crps_improvement_pct": 56.182729123205355,
+      "lstm_coverage": 0.0,
+      "xgb_coverage": 0.8743801652892562,
+      "lstm_pit_ks": 0.9985627020942047,
+      "xgb_pit_ks": 0.2916005849838257,
       "lstm_pit_pvalue": 0.0,
       "xgb_pit_pvalue": 0.0,
-      "lstm_fairness_ratio": 1.3531136443756782,
-      "xgb_fairness_ratio": 1.433338292087593
+      "lstm_fairness_ratio": 1.464901713440448,
+      "xgb_fairness_ratio": 1.2564819649054384
+    },
+    {
+      "pollutant": "pm25",
+      "horizon": 672,
+      "n_common": 5651,
+      "lstm_rmse": 43.162816017070035,
+      "xgb_rmse": 23.233434538800974,
+      "rmse_improvement_pct": -85.77888665141616,
+      "lstm_crps": 36.58949279785156,
+      "xgb_crps": 47.567909240722656,
+      "crps_improvement_pct": 23.079459699003387,
+      "lstm_coverage": 0.0,
+      "xgb_coverage": 0.9375331799681472,
+      "lstm_pit_ks": 0.9992921606753953,
+      "xgb_pit_ks": 0.16676080226898193,
+      "lstm_pit_pvalue": 0.0,
+      "xgb_pit_pvalue": 0.0,
+      "lstm_fairness_ratio": 1.563076610835214,
+      "xgb_fairness_ratio": 2.0074411454725363
     }
   ],
   "visualizations": [

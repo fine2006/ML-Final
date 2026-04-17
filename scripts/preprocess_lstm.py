@@ -64,7 +64,7 @@ FEATURE_COLUMNS = [
 ]
 
 
-HORIZONS = [1, 12, 24, 168, 672]
+HORIZONS = [1, 24, 672]
 
 
 def setup_logging() -> logging.Logger:
@@ -241,14 +241,15 @@ def add_horizon_targets(
 def estimate_sequence_counts(
     df: pd.DataFrame, horizons: list[int]
 ) -> dict[str, dict[str, int]]:
+    seq_len_by_horizon = {1: 168, 24: 336, 672: 2402}
     stats: dict[str, dict[str, int]] = {}
     for horizon in horizons:
-        seq_len = max(2 * horizon, 2)
+        seq_len = int(seq_len_by_horizon.get(horizon, max(2 * horizon, 2)))
         total = 0
         by_region: dict[str, int] = {}
         for region, region_df in df.groupby("region"):
             n = len(region_df)
-            count = max(0, n - seq_len - horizon)
+            count = max(0, n - seq_len)
             by_region[region] = int(count)
             total += count
         stats[f"h{horizon}"] = {
@@ -367,7 +368,10 @@ def main() -> None:
         },
         "sequence_materialization": {
             "representation": "rowwise_features_with_targets",
-            "note": "Sequences are materialized on-the-fly during training using seq_len=2*horizon.",
+            "note": (
+                "Sequences are materialized on-the-fly during training using horizon-specific "
+                "lengths: h1=168, h24=336, h672=2402."
+            ),
             "estimated_counts": sequence_estimate,
         },
         "scaler": scaler,

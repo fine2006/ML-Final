@@ -36,9 +36,14 @@ np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
 
 
-ALL_HORIZONS = [1, 12, 24, 168, 672]
+ALL_HORIZONS = [1, 24, 672]
 QUANTILES = [0.05, 0.50, 0.95, 0.99]
-MAX_SEQ_LEN = 672
+MAX_SEQ_LEN = 8760
+DEFAULT_SEQ_LEN_BY_HORIZON = {
+    1: 168,
+    24: 336,
+    672: 2402,
+}
 
 
 DATA_DIR = PROJECT_ROOT / "data" / "preprocessed_lstm_v1"
@@ -98,19 +103,22 @@ class RegionSequenceDataset(Dataset):
         target_columns: list[str],
         region_weights: dict[str, float],
         region_mapping: dict[str, int],
-        max_seq_len: int = MAX_SEQ_LEN,
+        seq_len: int = MAX_SEQ_LEN,
         max_samples: int | None = None,
         seed: int = RANDOM_SEED,
     ):
         self.feature_columns = feature_columns
         self.target_columns = target_columns
-        self.max_seq_len = max_seq_len
+        self.seq_len = seq_len
         self.seed = seed
 
         self.region_arrays: dict[str, np.ndarray] = {}
         self.target_arrays: dict[str, np.ndarray] = {}
         self.region_id_by_name = region_mapping
         self.region_weight_by_name = region_weights
+        self.record_counts_by_region: dict[str, int] = {
+            str(region_name): 0 for region_name in region_mapping
+        }
 
         records: list[tuple[str, int]] = []
         for region_name, region_df in df.groupby("region"):
@@ -120,8 +128,11 @@ class RegionSequenceDataset(Dataset):
             self.region_arrays[region_name] = feat
             self.target_arrays[region_name] = targ
 
-            for end_idx in range(max_seq_len, len(region_df)):
+            for end_idx in range(seq_len, len(region_df)):
                 records.append((region_name, end_idx))
+                self.record_counts_by_region[str(region_name)] = (
+                    self.record_counts_by_region.get(str(region_name), 0) + 1
+                )
 
         if max_samples is not None and len(records) > max_samples:
             rng = random.Random(seed)
@@ -137,8 +148,10 @@ class RegionSequenceDataset(Dataset):
         feat = self.region_arrays[region_name]
         targ = self.target_arrays[region_name]
 
-        x = feat[end_idx - self.max_seq_len : end_idx]
-        y = targ[end_idx]
+        x = np.array(
+            feat[end_idx - self.seq_len : end_idx], dtype=np.float32, copy=True
+        )
+        y = np.array(targ[end_idx], dtype=np.float32, copy=True)
         region_id = self.region_id_by_name.get(region_name, -1)
         region_weight = float(self.region_weight_by_name.get(region_name, 1.0))
 
@@ -151,6 +164,9 @@ class RegionSequenceDataset(Dataset):
 
     def region_ids(self) -> list[int]:
         return [self.region_id_by_name.get(region, -1) for region, _ in self.records]
+
+    def sample_counts_by_region(self) -> dict[str, int]:
+        return {k: int(v) for k, v in self.record_counts_by_region.items()}
 
 
 class HierarchicalQuantileLSTM(nn.Module):
@@ -211,8 +227,12 @@ class HierarchicalQuantileLSTM(nn.Module):
         seq_out, _ = self.backbone(x)
 
         per_horizon = []
+        separated_mode = len(self.horizons) == 1
         for horizon in self.horizons:
-            window = min(max(2 * horizon, self.min_attn_window), seq_out.size(1))
+            if separated_mode:
+                window = seq_out.size(1)
+            else:
+                window = min(max(2 * horizon, self.min_attn_window), seq_out.size(1))
             tail = seq_out[:, -window:, :]
             query = tail[:, -1:, :]
 
@@ -444,12 +464,96 @@ def compute_quantile_metrics(
     return metrics
 
 
+def resolve_seq_len_for_horizon(horizon: int, override: int | None) -> int:
+    if override is not None:
+        seq_len = int(override)
+    else:
+        seq_len = int(
+            DEFAULT_SEQ_LEN_BY_HORIZON.get(horizon, min(2 * horizon, MAX_SEQ_LEN))
+        )
+    if seq_len <= 0:
+        raise ValueError(f"seq_len must be > 0, got {seq_len}")
+    if seq_len > MAX_SEQ_LEN:
+        raise ValueError(f"seq_len={seq_len} exceeds MAX_SEQ_LEN={MAX_SEQ_LEN}")
+    return seq_len
+
+
+def parse_seq_len_map(raw: str, horizons: list[int]) -> dict[int, int]:
+    parsed: dict[int, int] = {}
+    text = raw.strip()
+    if text:
+        for part in text.split(","):
+            chunk = part.strip()
+            if not chunk:
+                continue
+            if ":" not in chunk:
+                raise ValueError(
+                    f"--seq-len-map must use horizon:seq_len pairs, got '{chunk}'"
+                )
+            h_str, s_str = chunk.split(":", 1)
+            horizon = int(h_str.strip())
+            seq_len = int(s_str.strip())
+            parsed[horizon] = seq_len
+
+    resolved: dict[int, int] = {}
+    for horizon in horizons:
+        resolved[horizon] = resolve_seq_len_for_horizon(
+            horizon=horizon,
+            override=parsed.get(horizon),
+        )
+    return resolved
+
+
+def validate_seq_len_feasibility(
+    split_tables: SplitTables,
+    horizons: list[int],
+    seq_len_by_horizon: dict[int, int],
+    logger: logging.Logger,
+) -> None:
+    required = ["train", "val", "test"]
+    split_frames = {
+        "train": split_tables.train,
+        "val": split_tables.val,
+        "test": split_tables.test,
+    }
+
+    for horizon in horizons:
+        seq_len = int(seq_len_by_horizon[horizon])
+        for split_name in required:
+            split_df = split_frames[split_name]
+            counts_by_region: dict[str, int] = {}
+            for region, region_df in split_df.groupby("region"):
+                counts_by_region[str(region)] = int(max(0, len(region_df) - seq_len))
+
+            if not counts_by_region:
+                raise ValueError(f"Split {split_name} has no region rows")
+
+            min_count = min(counts_by_region.values())
+            total = sum(counts_by_region.values())
+            logger.info(
+                "[h%d seq_len=%d] feasibility split=%s total=%d min_region=%d by_region=%s",
+                horizon,
+                seq_len,
+                split_name,
+                total,
+                min_count,
+                counts_by_region,
+            )
+
+            if min_count == 0:
+                raise ValueError(
+                    f"Infeasible horizon configuration: h{horizon} seq_len={seq_len} "
+                    f"produces zero samples for at least one region in split={split_name}. "
+                    f"Counts={counts_by_region}"
+                )
+
+
 def train_for_pollutant(
     pollutant: str,
     split_tables: SplitTables,
-    horizons: list[int],
+    horizon: int,
+    seq_len: int,
     min_attn_window: int,
-    horizon_loss_weights: list[float],
     epochs: int,
     batch_size: int,
     patience: int,
@@ -462,7 +566,9 @@ def train_for_pollutant(
 ) -> dict[str, Any]:
     metadata = split_tables.metadata
     feature_cols = metadata["feature_columns"]
-    target_cols = [f"target_{pollutant}_h{h}" for h in horizons]
+    target_cols = [f"target_{pollutant}_h{horizon}"]
+    horizons = [horizon]
+    horizon_loss_weights = [1.0]
     region_weights = {
         str(k): float(v) for k, v in metadata.get("region_weights", {}).items()
     }
@@ -476,6 +582,7 @@ def train_for_pollutant(
         target_columns=target_cols,
         region_weights=region_weights,
         region_mapping=region_mapping,
+        seq_len=seq_len,
         max_samples=max_train_samples,
     )
     val_ds = RegionSequenceDataset(
@@ -484,6 +591,7 @@ def train_for_pollutant(
         target_columns=target_cols,
         region_weights=region_weights,
         region_mapping=region_mapping,
+        seq_len=seq_len,
         max_samples=max_val_samples,
     )
     test_ds = RegionSequenceDataset(
@@ -492,20 +600,48 @@ def train_for_pollutant(
         target_columns=target_cols,
         region_weights=region_weights,
         region_mapping=region_mapping,
+        seq_len=seq_len,
         max_samples=max_test_samples,
     )
 
+    if len(train_ds) == 0:
+        raise ValueError(
+            f"No train sequences for pollutant={pollutant} h{horizon} seq_len={seq_len}"
+        )
+    if len(val_ds) == 0:
+        raise ValueError(
+            f"No val sequences for pollutant={pollutant} h{horizon} seq_len={seq_len}; "
+            "reduce seq_len for this horizon"
+        )
+    if len(test_ds) == 0:
+        raise ValueError(
+            f"No test sequences for pollutant={pollutant} h{horizon} seq_len={seq_len}; "
+            "reduce seq_len for this horizon"
+        )
+
     logger.info(
-        "[%s] sequence samples train=%d val=%d test=%d",
+        "[%s h%d] seq_len=%d sequence samples train=%d val=%d test=%d",
         pollutant,
+        horizon,
+        seq_len,
         len(train_ds),
         len(val_ds),
         len(test_ds),
     )
 
     logger.info(
-        "[%s] min_attn_window=%d horizon_loss_weights=%s",
+        "[%s h%d] per-region samples train=%s val=%s test=%s",
         pollutant,
+        horizon,
+        train_ds.sample_counts_by_region(),
+        val_ds.sample_counts_by_region(),
+        test_ds.sample_counts_by_region(),
+    )
+
+    logger.info(
+        "[%s h%d] min_attn_window=%d horizon_loss_weights=%s",
+        pollutant,
+        horizon,
         min_attn_window,
         {f"h{h}": float(w) for h, w in zip(horizons, horizon_loss_weights)},
     )
@@ -583,8 +719,9 @@ def train_for_pollutant(
             [f"h{h}={val_h_losses.get(f'h{h}', float('nan')):.4f}" for h in horizons]
         )
         logger.info(
-            "[%s] epoch %d/%d train_loss=%.6f val_loss=%.6f val_by_h=[%s]",
+            "[%s h%d] epoch %d/%d train_loss=%.6f val_loss=%.6f val_by_h=[%s]",
             pollutant,
+            horizon,
             epoch,
             epochs,
             train_loss,
@@ -602,7 +739,9 @@ def train_for_pollutant(
         else:
             wait += 1
             if wait >= patience:
-                logger.info("[%s] early stopping at epoch %d", pollutant, epoch)
+                logger.info(
+                    "[%s h%d] early stopping at epoch %d", pollutant, horizon, epoch
+                )
                 break
 
     if best_state is not None:
@@ -641,7 +780,7 @@ def train_for_pollutant(
         region_name_by_id=region_name_by_id,
     )
 
-    prediction_path = MODELS_DIR / f"lstm_predictions_{pollutant}.npz"
+    prediction_path = MODELS_DIR / f"lstm_predictions_{pollutant}_h{horizon}.npz"
     np.savez_compressed(
         prediction_path,
         predictions=test_pred.astype(np.float32),
@@ -651,13 +790,14 @@ def train_for_pollutant(
         quantiles=np.asarray(QUANTILES, dtype=np.float32),
     )
 
-    model_path = MODELS_DIR / f"lstm_quantile_{pollutant}.pt"
+    model_path = MODELS_DIR / f"lstm_quantile_{pollutant}_h{horizon}.pt"
     torch.save(
         {
             "state_dict": model.state_dict(),
             "feature_columns": feature_cols,
             "target_columns": target_cols,
             "horizons": horizons,
+            "seq_len": int(seq_len),
             "quantiles": QUANTILES,
             "min_attn_window": int(min_attn_window),
             "horizon_loss_weights": [float(x) for x in horizon_loss_weights],
@@ -669,8 +809,9 @@ def train_for_pollutant(
     )
 
     logger.info(
-        "[%s] saved model to %s and predictions %s | test overall RMSE(p50)=%.6f CRPS=%.6f",
+        "[%s h%d] saved model to %s and predictions %s | test overall RMSE(p50)=%.6f CRPS=%.6f",
         pollutant,
+        horizon,
         model_path,
         prediction_path,
         test_metrics["overall_rmse_p50"],
@@ -679,6 +820,8 @@ def train_for_pollutant(
 
     return {
         "pollutant": pollutant,
+        "horizon": int(horizon),
+        "seq_len": int(seq_len),
         "model_path": str(model_path),
         "best_epoch": int(best_epoch),
         "best_val_loss": float(best_val),
@@ -692,6 +835,11 @@ def train_for_pollutant(
             "train": len(train_ds),
             "val": len(val_ds),
             "test": len(test_ds),
+        },
+        "sample_counts_by_region": {
+            "train": train_ds.sample_counts_by_region(),
+            "val": val_ds.sample_counts_by_region(),
+            "test": test_ds.sample_counts_by_region(),
         },
     }
 
@@ -711,6 +859,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=",".join(str(h) for h in ALL_HORIZONS),
         help="Comma-separated horizons in hours",
+    )
+    parser.add_argument(
+        "--seq-len-map",
+        type=str,
+        default=",".join(f"{h}:{s}" for h, s in DEFAULT_SEQ_LEN_BY_HORIZON.items()),
+        help=("Comma-separated horizon:seq_len map; default is 1:168,24:336,672:2402"),
     )
     parser.add_argument("--data-dir", type=str, default=str(DATA_DIR))
     parser.add_argument("--epochs", type=int, default=100)
@@ -734,37 +888,13 @@ def parse_args() -> argparse.Namespace:
         "--horizon-loss-weights",
         type=str,
         default="",
-        help="Optional comma-separated horizon loss weights in horizon order",
+        help="Ignored in separated-horizon training mode",
     )
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--max-train-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
     parser.add_argument("--max-test-samples", type=int, default=None)
     return parser.parse_args()
-
-
-def resolve_horizon_loss_weights(
-    horizons: list[int],
-    weighting: str,
-    manual_weights: str,
-) -> list[float]:
-    if manual_weights.strip():
-        values = [float(x.strip()) for x in manual_weights.split(",") if x.strip()]
-        if len(values) != len(horizons):
-            raise ValueError(
-                "--horizon-loss-weights must match number of horizons; "
-                f"got {len(values)} for horizons={horizons}"
-            )
-        arr = np.asarray(values, dtype=np.float64)
-    elif weighting == "inverse_sqrt":
-        arr = 1.0 / np.sqrt(np.asarray(horizons, dtype=np.float64))
-    else:
-        arr = np.ones(len(horizons), dtype=np.float64)
-
-    if np.any(arr <= 0):
-        raise ValueError("All horizon loss weights must be positive")
-    arr = arr / arr.mean()
-    return arr.astype(np.float32).tolist()
 
 
 def main() -> None:
@@ -788,40 +918,58 @@ def main() -> None:
             f"Unsupported horizons: {invalid_horizons}; allowed={ALL_HORIZONS}"
         )
 
-    horizon_loss_weights = resolve_horizon_loss_weights(
+    if args.horizon_weighting != "equal" or args.horizon_loss_weights.strip():
+        logger.info(
+            "Horizon weighting args are ignored in separated-horizon training mode"
+        )
+
+    seq_len_by_horizon = parse_seq_len_map(args.seq_len_map, horizons)
+    validate_seq_len_feasibility(
+        split_tables=split_tables,
         horizons=horizons,
-        weighting=args.horizon_weighting,
-        manual_weights=args.horizon_loss_weights,
+        seq_len_by_horizon=seq_len_by_horizon,
+        logger=logger,
     )
     results: dict[str, Any] = {
         "created_at": datetime.now().isoformat(),
         "random_seed": RANDOM_SEED,
         "device": str(device),
+        "training_mode": "separated_horizon_models",
         "horizons": horizons,
+        "seq_len_by_horizon": {f"h{h}": int(seq_len_by_horizon[h]) for h in horizons},
         "quantiles": QUANTILES,
         "min_attn_window": int(args.min_attn_window),
-        "horizon_loss_weights": [float(x) for x in horizon_loss_weights],
         "pollutants": {},
     }
 
     for pollutant in pollutants:
         logger.info("Training pollutant: %s", pollutant)
-        pollutant_result = train_for_pollutant(
-            pollutant=pollutant,
-            split_tables=split_tables,
-            horizons=horizons,
-            min_attn_window=args.min_attn_window,
-            horizon_loss_weights=horizon_loss_weights,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            patience=args.patience,
-            lr=args.lr,
-            device=device,
-            max_train_samples=args.max_train_samples,
-            max_val_samples=args.max_val_samples,
-            max_test_samples=args.max_test_samples,
-            logger=logger,
-        )
+        pollutant_result: dict[str, Any] = {}
+        for horizon in horizons:
+            seq_len = int(seq_len_by_horizon[horizon])
+            logger.info(
+                "Launching training for pollutant=%s horizon=h%d seq_len=%d",
+                pollutant,
+                horizon,
+                seq_len,
+            )
+            horizon_result = train_for_pollutant(
+                pollutant=pollutant,
+                split_tables=split_tables,
+                horizon=horizon,
+                seq_len=seq_len,
+                min_attn_window=args.min_attn_window,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                patience=args.patience,
+                lr=args.lr,
+                device=device,
+                max_train_samples=args.max_train_samples,
+                max_val_samples=args.max_val_samples,
+                max_test_samples=args.max_test_samples,
+                logger=logger,
+            )
+            pollutant_result[f"h{horizon}"] = horizon_result
         results["pollutants"][pollutant] = pollutant_result
 
     out_path = MODELS_DIR / "lstm_training_summary.json"
