@@ -15,30 +15,12 @@ PIPELINE_START_TS = time.time()
 ! rm -rf ML-Final && git clone https://github.com/fine2006/ML-Final -b new-approach
 ! cd ML-Final && uv sync
 ! cp -r "/kaggle/input/datasets/fine2006/pollution-data-raipur/Pollution Data Raipur" ML-Final/
-```
-
-```python
 # %% [code]
 ! cd ML-Final && uv run python -c 'import torch; print(f"torch: {torch.__version__}\ncuda: {torch.cuda.is_available()}"); print(f"gpu_count: {torch.cuda.device_count()}"); [print(f"gpu[{i}]={torch.cuda.get_device_name(i)}") for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else None'
-```
-
-## 2) Phase 1 + Preprocess
-
-```python
 # %% [code]
 ! cd ML-Final && uv run python scripts/data_investigation.py
-```
-
-```python
 # %% [code]
 ! export MPLBACKEND=Agg && cd ML-Final && uv run python scripts/preprocess_lstm.py && uv run python scripts/preprocess_xgb.py
-```
-
-## 3) Bring XGB models from local build (skip Kaggle XGB training)
-
-Expected files: `xgb_quantile_{pollutant}_h{1|24|168}_q{05|50|95|99}.json`
-
-```python
 # %% [code]
 import pathlib, shutil, re
 
@@ -73,11 +55,6 @@ print("xgb model count:", len(present))
 if missing:
     print("missing examples:", missing[:10])
     raise RuntimeError(f"Missing {len(missing)} expected xgb model files")
-```
-
-## 4) LSTM dual-GPU training (horizon-specific)
-
-```python
 # %% [code]
 import os, time, json, shutil, pathlib, subprocess
 from datetime import datetime
@@ -220,11 +197,6 @@ final = {
 }
 SUMMARY_SHARED.write_text(json.dumps(final, indent=2))
 print("final summary:", SUMMARY_SHARED)
-```
-
-## 5) Evaluate with calibration + representativeness checks
-
-```python
 # %% [code]
 import os, json, pathlib, subprocess
 
@@ -248,11 +220,6 @@ print("fair rows:", len(fair.get("rows", [])))
 print("calibration enabled:", summary.get("quantile_calibration_enabled"))
 print("interval focus:", summary.get("interval_focus"))
 print("has data quality context:", "phase1_data_quality_context" in summary)
-```
-
-## 6) Predict (single region, single horizon, all pollutants)
-
-```python
 # %% [code]
 import pathlib, subprocess
 
