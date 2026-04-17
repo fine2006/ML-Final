@@ -36,13 +36,13 @@ np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
 
 
-ALL_HORIZONS = [1, 24, 672]
+ALL_HORIZONS = [1, 24, 168]
 QUANTILES = [0.05, 0.50, 0.95, 0.99]
 MAX_SEQ_LEN = 8760
 DEFAULT_SEQ_LEN_BY_HORIZON = {
     1: 168,
     24: 336,
-    672: 2402,
+    168: 720,
 }
 
 
@@ -864,7 +864,7 @@ def parse_args() -> argparse.Namespace:
         "--seq-len-map",
         type=str,
         default=",".join(f"{h}:{s}" for h, s in DEFAULT_SEQ_LEN_BY_HORIZON.items()),
-        help=("Comma-separated horizon:seq_len map; default is 1:168,24:336,672:2402"),
+        help=("Comma-separated horizon:seq_len map; default is 1:168,24:336,168:720"),
     )
     parser.add_argument("--data-dir", type=str, default=str(DATA_DIR))
     parser.add_argument("--epochs", type=int, default=100)

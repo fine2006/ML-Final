@@ -105,6 +105,20 @@ NUMERIC_COLUMNS = [
     "wind_direction",
 ]
 
+POLLUTANT_COLUMNS = ["pm25", "pm10", "no2", "o3"]
+
+# Conservative hard upper bounds for impossible-value screening in exploratory
+# Phase 1 diagnostics. These are not model caps; they are sensor-sanity bounds.
+POLLUTANT_HARD_CAPS = {
+    "pm25": 5000.0,
+    "pm10": 3000.0,
+    "no2": 1500.0,
+    "o3": 1000.0,
+}
+
+# Existing fixed XGB cap policy for PM2.5 remains unchanged.
+XGB_FIXED_CAPS = {"pm25": 300.0}
+
 
 @dataclass
 class SpikeClusterResult:
@@ -793,6 +807,178 @@ def count_sequence_ready_points(series: pd.Series) -> int:
     return int(sum(max(length - 1, 0) for length in contiguous_lengths))
 
 
+def _iqr_upper(series: pd.Series, multiplier: float = 3.0) -> float:
+    clean = pd.to_numeric(series, errors="coerce").dropna()
+    if clean.empty:
+        return float("nan")
+    q1 = float(clean.quantile(0.25))
+    q3 = float(clean.quantile(0.75))
+    iqr = q3 - q1
+    return float(q3 + multiplier * iqr)
+
+
+def investigate_pollutant_outliers(dedup_df: pd.DataFrame) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "hard_caps": POLLUTANT_HARD_CAPS,
+        "xgb_fixed_caps": XGB_FIXED_CAPS,
+        "pollutants": {},
+    }
+
+    for pollutant in POLLUTANT_COLUMNS:
+        s = pd.to_numeric(dedup_df[pollutant], errors="coerce")
+        valid = s.dropna()
+        if valid.empty:
+            payload["pollutants"][pollutant] = {"note": "no valid values"}
+            continue
+
+        hard_cap = float(POLLUTANT_HARD_CAPS[pollutant])
+        fixed_cap = (
+            float(XGB_FIXED_CAPS[pollutant])
+            if pollutant in XGB_FIXED_CAPS
+            else float("nan")
+        )
+        iqr_cap = _iqr_upper(valid, multiplier=3.0)
+
+        frac_above_hard = float(np.mean(valid > hard_cap))
+        frac_above_iqr = (
+            float(np.mean(valid > iqr_cap)) if np.isfinite(iqr_cap) else float("nan")
+        )
+        frac_above_fixed = (
+            float(np.mean(valid > fixed_cap))
+            if np.isfinite(fixed_cap)
+            else float("nan")
+        )
+
+        top_rows = (
+            dedup_df.loc[valid.index, ["region", "timestamp", pollutant]]
+            .sort_values(pollutant, ascending=False)
+            .head(10)
+        )
+
+        payload["pollutants"][pollutant] = {
+            "count": int(len(valid)),
+            "negatives": int((valid < 0).sum()),
+            "quantiles": {
+                "p50": float(valid.quantile(0.50)),
+                "p95": float(valid.quantile(0.95)),
+                "p99": float(valid.quantile(0.99)),
+                "p999": float(valid.quantile(0.999)),
+                "max": float(valid.max()),
+            },
+            "thresholds": {
+                "hard_cap": hard_cap,
+                "iqr_upper_3x": float(iqr_cap)
+                if np.isfinite(iqr_cap)
+                else float("nan"),
+                "xgb_fixed_cap": float(fixed_cap) if np.isfinite(fixed_cap) else None,
+            },
+            "fraction_above": {
+                "hard_cap": frac_above_hard,
+                "iqr_upper_3x": frac_above_iqr,
+                "xgb_fixed_cap": frac_above_fixed,
+            },
+            "top_10_rows": [
+                {
+                    "region": str(row["region"]),
+                    "timestamp": pd.Timestamp(row["timestamp"]).isoformat(),
+                    pollutant: float(row[pollutant]),
+                }
+                for _, row in top_rows.iterrows()
+            ],
+        }
+
+    return payload
+
+
+def compute_pollutant_loss_analysis(
+    dedup_df: pd.DataFrame,
+    pollutant: str,
+    xgb_cap: float | None,
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+
+    for region, region_df in dedup_df.groupby("region"):
+        region_df = region_df.sort_values("timestamp").copy()
+        raw_count = len(region_df)
+        series = pd.to_numeric(region_df[pollutant], errors="coerce")
+
+        hard_cap = float(POLLUTANT_HARD_CAPS[pollutant])
+        after_impossible = series.where((series >= 0) & (series <= hard_cap))
+        after_impossible_count = int(after_impossible.notna().sum())
+
+        full_index = pd.date_range(
+            region_df["timestamp"].min(),
+            region_df["timestamp"].max(),
+            freq="h",
+        )
+        aligned = pd.Series(
+            after_impossible.to_numpy(), index=region_df["timestamp"]
+        ).reindex(full_index)
+        after_interp = aligned.interpolate(
+            method="time", limit=5, limit_direction="both"
+        )
+        after_interp_count = int(after_interp.notna().sum())
+
+        if xgb_cap is not None:
+            after_cap = after_interp.where(
+                (after_interp >= 0) & (after_interp <= float(xgb_cap))
+            )
+        else:
+            after_cap = after_interp
+        after_cap_count = int(after_cap.notna().sum())
+
+        after_seq = count_sequence_ready_points(after_cap)
+
+        rows.append(
+            {
+                "region": region,
+                "raw": int(raw_count),
+                "after_impossible": int(after_impossible_count),
+                "after_missing": int(after_interp_count),
+                "after_outliers": int(after_cap_count),
+                "after_sequence": int(after_seq),
+                "loss_impossible": int(raw_count - after_impossible_count),
+                "interpolated_gain": int(
+                    max(0, after_interp_count - after_impossible_count)
+                ),
+                "loss_outliers": int(after_interp_count - after_cap_count),
+                "loss_sequence": int(after_cap_count - after_seq),
+            }
+        )
+
+    table = pd.DataFrame(rows).sort_values("region").reset_index(drop=True)
+    totals = {
+        "raw": int(table["raw"].sum()),
+        "after_impossible": int(table["after_impossible"].sum()),
+        "after_missing": int(table["after_missing"].sum()),
+        "after_outliers": int(table["after_outliers"].sum()),
+        "after_sequence": int(table["after_sequence"].sum()),
+        "loss_impossible": int(table["loss_impossible"].sum()),
+        "interpolated_gain": int(table["interpolated_gain"].sum()),
+        "loss_outliers": int(table["loss_outliers"].sum()),
+        "loss_sequence": int(table["loss_sequence"].sum()),
+    }
+
+    return {
+        "pollutant": pollutant,
+        "xgb_cap": xgb_cap,
+        "region_table": table,
+        "totals": totals,
+    }
+
+
+def compute_all_pollutant_loss_analyses(dedup_df: pd.DataFrame) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    for pollutant in POLLUTANT_COLUMNS:
+        cap = XGB_FIXED_CAPS.get(pollutant)
+        results[pollutant] = compute_pollutant_loss_analysis(
+            dedup_df=dedup_df,
+            pollutant=pollutant,
+            xgb_cap=cap,
+        )
+    return results
+
+
 def compute_data_loss_analysis(dedup_df: pd.DataFrame) -> dict[str, Any]:
     region_rows: list[dict[str, Any]] = []
 
@@ -1029,6 +1215,81 @@ def create_loss_and_imbalance_visualizations(
     plt.close()
 
 
+def create_pollutant_investigation_visualizations(
+    dedup_df: pd.DataFrame,
+    pollutant_outlier_analysis: dict[str, Any],
+) -> None:
+    # 1) Distribution tails (log-like spread by clipping at p99.9 for readability)
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    for axis, pollutant in zip(axes.flatten(), POLLUTANT_COLUMNS, strict=True):
+        s = pd.to_numeric(dedup_df[pollutant], errors="coerce").dropna()
+        if s.empty:
+            axis.set_title(f"{pollutant.upper()} (no data)")
+            continue
+        p999 = float(s.quantile(0.999))
+        clipped = s.clip(lower=0, upper=p999)
+        axis.hist(clipped, bins=80, color="#457b9d", alpha=0.85)
+        axis.set_title(
+            f"{pollutant.upper()} distribution (clipped at p99.9={p999:.1f})"
+        )
+        axis.set_xlabel("Concentration")
+        axis.set_ylabel("Count")
+        axis.grid(alpha=0.2)
+    plt.tight_layout()
+    plt.savefig(VIZ_DIR / "all_pollutants_distribution_tails.png", dpi=160)
+    plt.close()
+
+    # 2) Fraction above candidate thresholds by pollutant
+    records = []
+    for pollutant, payload in pollutant_outlier_analysis.get("pollutants", {}).items():
+        frac = payload.get("fraction_above", {})
+        records.append(
+            {
+                "pollutant": pollutant,
+                "hard_cap": float(frac.get("hard_cap", np.nan)),
+                "iqr_upper_3x": float(frac.get("iqr_upper_3x", np.nan)),
+                "xgb_fixed_cap": float(frac.get("xgb_fixed_cap", np.nan))
+                if frac.get("xgb_fixed_cap") is not None
+                else np.nan,
+            }
+        )
+    if records:
+        df = pd.DataFrame(records).set_index("pollutant")
+        fig, ax = plt.subplots(figsize=(10, 4))
+        df.plot(kind="bar", ax=ax)
+        ax.set_title("Fraction above threshold candidates by pollutant")
+        ax.set_ylabel("Fraction of valid rows")
+        ax.grid(axis="y", alpha=0.25)
+        plt.tight_layout()
+        plt.savefig(VIZ_DIR / "all_pollutants_threshold_exceedance.png", dpi=160)
+        plt.close()
+
+    # 3) Retention after baseline filtering and sequence readiness by pollutant
+    bars = []
+    for pollutant, payload in pollutant_outlier_analysis.get("pollutants", {}).items():
+        # This view is from threshold perspective only; detailed loss is in JSON tables.
+        quantiles = payload.get("quantiles", {})
+        bars.append(
+            {
+                "pollutant": pollutant,
+                "p95": float(quantiles.get("p95", np.nan)),
+                "p99": float(quantiles.get("p99", np.nan)),
+                "p999": float(quantiles.get("p999", np.nan)),
+                "max": float(quantiles.get("max", np.nan)),
+            }
+        )
+    if bars:
+        df = pd.DataFrame(bars).set_index("pollutant")
+        fig, ax = plt.subplots(figsize=(10, 4))
+        df[["p95", "p99", "p999"]].plot(kind="bar", ax=ax)
+        ax.set_title("Pollutant tail quantiles (p95/p99/p99.9)")
+        ax.set_ylabel("Concentration")
+        ax.grid(axis="y", alpha=0.25)
+        plt.tight_layout()
+        plt.savefig(VIZ_DIR / "all_pollutants_tail_quantiles.png", dpi=160)
+        plt.close()
+
+
 def compute_region_imbalance(
     dedup_df: pd.DataFrame, data_loss: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1145,6 +1406,8 @@ def save_outputs(
     spike_analysis: dict[str, Any],
     data_loss: dict[str, Any],
     imbalance: dict[str, Any],
+    pollutant_outlier_analysis: dict[str, Any],
+    pollutant_loss: dict[str, Any],
     source_contribution: dict[str, Any],
     logger: logging.Logger,
 ) -> Path:
@@ -1175,6 +1438,16 @@ def save_outputs(
             "totals": data_loss["totals"],
             "region_table": data_loss["region_table"].to_dict(orient="records"),
             "recovery_analysis": data_loss["recovery_analysis"],
+        },
+        "all_pollutants_outlier_analysis": pollutant_outlier_analysis,
+        "all_pollutants_loss": {
+            pollutant: {
+                "pollutant": payload["pollutant"],
+                "xgb_cap": payload["xgb_cap"],
+                "totals": payload["totals"],
+                "region_table": payload["region_table"].to_dict(orient="records"),
+            }
+            for pollutant, payload in pollutant_loss.items()
         },
         "region_imbalance": imbalance,
     }
@@ -1220,10 +1493,17 @@ def main() -> None:
 
     data_loss = compute_data_loss_analysis(dedup_df)
     imbalance = compute_region_imbalance(dedup_df, data_loss)
+    pollutant_outlier_analysis = investigate_pollutant_outliers(dedup_df)
+    pollutant_loss = compute_all_pollutant_loss_analyses(dedup_df)
+
     create_loss_and_imbalance_visualizations(
         data_loss=data_loss,
         dedup_df=dedup_df,
         region_weights=imbalance["region_weights"],
+    )
+    create_pollutant_investigation_visualizations(
+        dedup_df=dedup_df,
+        pollutant_outlier_analysis=pollutant_outlier_analysis,
     )
 
     results_path = save_outputs(
@@ -1232,6 +1512,8 @@ def main() -> None:
         spike_analysis=spike_analysis,
         data_loss=data_loss,
         imbalance=imbalance,
+        pollutant_outlier_analysis=pollutant_outlier_analysis,
+        pollutant_loss=pollutant_loss,
         source_contribution=source_contribution,
         logger=logger,
     )
@@ -1249,6 +1531,17 @@ def main() -> None:
     logger.info(
         "Post-preprocessing imbalance ratio: %.3fx", imbalance["post_imbalance_ratio"]
     )
+    for pollutant in POLLUTANT_COLUMNS:
+        totals = pollutant_loss[pollutant]["totals"]
+        logger.info(
+            "[%s] raw=%d after_impossible=%d after_missing=%d after_outliers=%d after_sequence=%d",
+            pollutant,
+            totals["raw"],
+            totals["after_impossible"],
+            totals["after_missing"],
+            totals["after_outliers"],
+            totals["after_sequence"],
+        )
     logger.info("Region weights: %s", imbalance["region_weights"])
     logger.info("Results JSON: %s", results_path)
 

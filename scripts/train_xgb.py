@@ -32,7 +32,7 @@ random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 
 
-ALL_HORIZONS = [1, 24, 672]
+ALL_HORIZONS = [1, 24, 168]
 QUANTILES = [0.05, 0.50, 0.95, 0.99]
 
 

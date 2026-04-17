@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 import torch
 import xgboost as xgb
-from scipy.stats import kstest
+from scipy.stats import ks_2samp, kstest
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from torch.utils.data import DataLoader, Dataset
 
@@ -46,8 +46,13 @@ from scripts.train_lstm import (  # noqa: E402
 MODELS_DIR = PROJECT_ROOT / "models"
 LOG_DIR = PROJECT_ROOT / "logs" / "evaluate"
 VIS_DIR = PROJECT_ROOT / "visualizations" / "phase_6_evaluation"
+PHASE1_RESULTS_PATH = (
+    PROJECT_ROOT / "data" / "raw" / "phase1_investigation_results.json"
+)
 
 DEFAULT_POLLUTANTS = ["pm25", "pm10", "no2", "o3"]
+TARGET_QUANTILES = [0.05, 0.50, 0.95, 0.99]
+CALIBRATION_MIN_SAMPLES = 50
 
 
 @dataclass
@@ -60,6 +65,149 @@ class QuantilePayload:
     regions: dict[int, np.ndarray]
     timestamps: dict[int, np.ndarray]
     metrics: dict[str, Any]
+
+
+def _enforce_monotonic_quantiles(pred_q: np.ndarray) -> np.ndarray:
+    if pred_q.ndim != 2:
+        raise ValueError(f"pred_q must be 2D, got shape={pred_q.shape}")
+    return np.maximum.accumulate(pred_q.astype(np.float32, copy=True), axis=1)
+
+
+def fit_quantile_biases(
+    y_true: np.ndarray,
+    pred_q: np.ndarray,
+    quantiles: list[float],
+) -> tuple[np.ndarray, dict[str, Any]]:
+    q_levels = np.asarray(quantiles, dtype=np.float32)
+    pred_mono = _enforce_monotonic_quantiles(pred_q)
+    y_col = y_true.astype(np.float32).reshape(-1, 1)
+    residual = y_col - pred_mono
+    bias = np.asarray(
+        [np.quantile(residual[:, i], float(q_levels[i])) for i in range(len(q_levels))],
+        dtype=np.float32,
+    )
+
+    calibrated = _enforce_monotonic_quantiles(pred_mono + bias.reshape(1, -1))
+    empirical = np.asarray(
+        [np.mean(y_true <= calibrated[:, i]) for i in range(len(quantiles))],
+        dtype=np.float32,
+    )
+    mean_abs_quantile_error = float(np.mean(np.abs(empirical - q_levels)))
+    return bias, {
+        "bias_by_quantile": {
+            f"q{int(round(float(q) * 100)):02d}": float(b)
+            for q, b in zip(q_levels.tolist(), bias.tolist())
+        },
+        "val_empirical_by_quantile": {
+            f"q{int(round(float(q) * 100)):02d}": float(e)
+            for q, e in zip(q_levels.tolist(), empirical.tolist())
+        },
+        "val_mean_abs_quantile_error": mean_abs_quantile_error,
+        "num_samples": int(len(y_true)),
+    }
+
+
+def apply_quantile_biases(
+    pred_q: np.ndarray,
+    bias: np.ndarray,
+) -> np.ndarray:
+    pred_mono = _enforce_monotonic_quantiles(pred_q)
+    adjusted = pred_mono + bias.reshape(1, -1)
+    return _enforce_monotonic_quantiles(adjusted)
+
+
+def summarize_split_representativeness(
+    split_name: str,
+    rows: pd.DataFrame,
+    pollutants: list[str],
+) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "rows": int(len(rows)),
+        "region_distribution": {},
+        "time": {},
+        "pollutants": {},
+    }
+    if rows.empty:
+        return out
+
+    rows_local = rows.copy()
+    rows_local["timestamp"] = pd.to_datetime(rows_local["timestamp"], errors="coerce")
+    rows_local = rows_local.dropna(subset=["timestamp", "region"]).copy()
+    if rows_local.empty:
+        return out
+
+    region_counts = rows_local["region"].astype(str).value_counts().sort_index()
+    out["region_distribution"] = {
+        str(k): {
+            "count": int(v),
+            "fraction": float(v / max(len(rows_local), 1)),
+        }
+        for k, v in region_counts.items()
+    }
+
+    out["time"] = {
+        "min": pd.Timestamp(rows_local["timestamp"].min()).isoformat(),
+        "max": pd.Timestamp(rows_local["timestamp"].max()).isoformat(),
+    }
+
+    for pollutant in pollutants:
+        if pollutant not in rows_local.columns:
+            continue
+        vals = rows_local[pollutant].astype(float)
+        out["pollutants"][pollutant] = {
+            "mean": float(vals.mean()),
+            "std": float(vals.std(ddof=0)),
+            "p05": float(vals.quantile(0.05)),
+            "p50": float(vals.quantile(0.50)),
+            "p95": float(vals.quantile(0.95)),
+        }
+
+    return out
+
+
+def compare_split_representativeness(
+    a: dict[str, Any],
+    b: dict[str, Any],
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "rows_ratio_b_over_a": float(b.get("rows", 0) / max(a.get("rows", 1), 1)),
+        "region_fraction_max_abs_diff": float("nan"),
+        "pollutant_ks": {},
+        "flags": [],
+    }
+
+    a_regions = a.get("region_distribution", {})
+    b_regions = b.get("region_distribution", {})
+    all_regions = sorted(set(a_regions) | set(b_regions))
+    if all_regions:
+        diffs = []
+        for r in all_regions:
+            fa = float(a_regions.get(r, {}).get("fraction", 0.0))
+            fb = float(b_regions.get(r, {}).get("fraction", 0.0))
+            diffs.append(abs(fa - fb))
+        report["region_fraction_max_abs_diff"] = float(max(diffs))
+        if report["region_fraction_max_abs_diff"] > 0.10:
+            report["flags"].append("region_mix_shift_gt_10pct")
+
+    a_pol = a.get("pollutants", {})
+    b_pol = b.get("pollutants", {})
+    for pollutant in sorted(set(a_pol) & set(b_pol)):
+        ma = float(a_pol[pollutant].get("mean", 0.0))
+        mb = float(b_pol[pollutant].get("mean", 0.0))
+        sa = float(a_pol[pollutant].get("std", 1.0))
+        sb = float(b_pol[pollutant].get("std", 1.0))
+        pooled = max((sa + sb) / 2.0, 1e-6)
+        z = abs(mb - ma) / pooled
+        report["pollutant_ks"][pollutant] = {
+            "mean_z_shift": float(z),
+            "mean_delta": float(mb - ma),
+            "std_a": float(sa),
+            "std_b": float(sb),
+        }
+        if z > 0.5:
+            report["flags"].append(f"{pollutant}_mean_shift_gt_0.5std")
+
+    return report
 
 
 class LSTMInferenceDataset(Dataset):
@@ -191,6 +339,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run fair comparison on common (region,timestamp) rows only",
     )
+    parser.add_argument(
+        "--calibrate-quantiles",
+        action="store_true",
+        help="Calibrate quantiles on validation data before test evaluation",
+    )
     return parser.parse_args()
 
 
@@ -281,6 +434,7 @@ def compute_horizon_metrics(
     regions: np.ndarray,
     quantiles: list[float],
 ) -> tuple[dict[str, Any], np.ndarray]:
+    pred_q = _enforce_monotonic_quantiles(pred_q)
     q_idx = {q: i for i, q in enumerate(quantiles)}
     p05 = pred_q[:, q_idx[0.05]]
     p50 = pred_q[:, q_idx[0.50]]
@@ -323,8 +477,13 @@ def evaluate_lstm_models(
     requested_horizons: list[int],
     device: torch.device,
     batch_size: int,
+    calibrate_quantiles: bool,
     logger: logging.Logger,
 ) -> tuple[dict[str, Any], dict[str, QuantilePayload], pd.DataFrame]:
+    val_df = pd.read_csv(data_dir / "val.csv", parse_dates=["timestamp"])
+    val_df["timestamp"] = pd.to_datetime(val_df["timestamp"], errors="coerce").dt.floor(
+        "h"
+    )
     test_df = pd.read_csv(data_dir / "test.csv", parse_dates=["timestamp"])
     test_df["timestamp"] = pd.to_datetime(
         test_df["timestamp"], errors="coerce"
@@ -351,6 +510,7 @@ def evaluate_lstm_models(
         all_sq_err: list[np.ndarray] = []
         all_abs_err: list[np.ndarray] = []
         all_crps_terms: list[np.ndarray] = []
+        calibration_by_horizon: dict[str, Any] = {}
 
         for horizon in requested_horizons:
             checkpoint, model_path = _load_lstm_checkpoint_for_horizon(
@@ -409,6 +569,22 @@ def evaluate_lstm_models(
                 )
                 continue
 
+            infer_val_ds = LSTMInferenceDataset(
+                df=val_df,
+                feature_columns=feature_cols,
+                target_columns=[target_col],
+                region_mapping=metadata["region_mapping"],
+                max_seq_len=seq_len,
+            )
+            if len(infer_val_ds) == 0:
+                logger.warning(
+                    "[LSTM %s h%d] no val sequences available for seq_len=%d",
+                    pollutant,
+                    horizon,
+                    seq_len,
+                )
+                continue
+
             infer_ds = LSTMInferenceDataset(
                 df=test_df,
                 feature_columns=feature_cols,
@@ -425,6 +601,9 @@ def evaluate_lstm_models(
                 )
                 continue
 
+            infer_val_loader = DataLoader(
+                infer_val_ds, batch_size=batch_size, shuffle=False
+            )
             infer_loader = DataLoader(infer_ds, batch_size=batch_size, shuffle=False)
 
             model = HierarchicalQuantileLSTM(
@@ -440,16 +619,27 @@ def evaluate_lstm_models(
             model.load_state_dict(checkpoint["state_dict"])
             model.eval()
 
+            preds_val: list[np.ndarray] = []
+            tgts_val: list[np.ndarray] = []
             preds: list[np.ndarray] = []
             tgts: list[np.ndarray] = []
             region_ids: list[np.ndarray] = []
             with torch.no_grad():
+                for xb, yb, _region_id in infer_val_loader:
+                    xb = xb.to(device)
+                    pred = model(xb).cpu().numpy()
+                    preds_val.append(pred)
+                    tgts_val.append(yb.numpy())
+
                 for xb, yb, region_id in infer_loader:
                     xb = xb.to(device)
                     pred = model(xb).cpu().numpy()
                     preds.append(pred)
                     tgts.append(yb.numpy())
                     region_ids.append(region_id.numpy())
+
+            pred_val_all = np.concatenate(preds_val, axis=0)
+            tgt_val_all = np.concatenate(tgts_val, axis=0)
 
             pred_all = np.concatenate(preds, axis=0)
             tgt_all = np.concatenate(tgts, axis=0)
@@ -464,8 +654,28 @@ def evaluate_lstm_models(
             )
 
             horizon_idx = checkpoint_horizons.index(horizon)
+            y_val_h = tgt_val_all[:, 0]
+            pred_val_h = pred_val_all[:, horizon_idx, :]
             y_h = tgt_all[:, 0]
             pred_h = pred_all[:, horizon_idx, :]
+
+            if calibrate_quantiles:
+                if len(y_val_h) < CALIBRATION_MIN_SAMPLES:
+                    logger.warning(
+                        "[LSTM %s h%d] insufficient val samples for calibration (%d)",
+                        pollutant,
+                        horizon,
+                        len(y_val_h),
+                    )
+                else:
+                    bias, calib_meta = fit_quantile_biases(
+                        y_true=y_val_h,
+                        pred_q=pred_val_h,
+                        quantiles=quantiles,
+                    )
+                    pred_h = apply_quantile_biases(pred_h, bias)
+                    calibration_by_horizon[f"h{horizon}"] = calib_meta
+
             metrics_h, pit_h = compute_horizon_metrics(
                 y_true=y_h,
                 pred_q=pred_h,
@@ -527,6 +737,7 @@ def evaluate_lstm_models(
             "overall_mae_p50": float(np.mean(abs_err)),
             "overall_crps_approx": float(np.mean(crps_terms)),
             "by_horizon": by_horizon,
+            "calibration": calibration_by_horizon,
         }
 
         payloads[pollutant] = QuantilePayload(
@@ -555,8 +766,15 @@ def evaluate_xgb_models(
     data_dir: Path,
     pollutants: list[str],
     requested_horizons: list[int],
+    calibrate_quantiles: bool,
     logger: logging.Logger,
 ) -> tuple[dict[str, Any], dict[str, QuantilePayload], pd.DataFrame, pd.DataFrame]:
+    X_val = pd.read_csv(data_dir / "X_val.csv", parse_dates=["timestamp"])
+    X_val["timestamp"] = pd.to_datetime(X_val["timestamp"], errors="coerce").dt.floor(
+        "h"
+    )
+    y_val = pd.read_csv(data_dir / "y_val.csv")
+
     X_test = pd.read_csv(data_dir / "X_test.csv", parse_dates=["timestamp"])
     X_test["timestamp"] = pd.to_datetime(X_test["timestamp"], errors="coerce").dt.floor(
         "h"
@@ -564,6 +782,7 @@ def evaluate_xgb_models(
     y_test = pd.read_csv(data_dir / "y_test.csv")
     feature_cols = [c for c in X_test.columns if c not in {"timestamp", "region"}]
 
+    X_val_matrix = X_val[feature_cols]
     X_matrix = X_test[feature_cols]
     region_names = X_test["region"].to_numpy(dtype=object)
 
@@ -578,6 +797,7 @@ def evaluate_xgb_models(
         ts_by_h: dict[int, np.ndarray] = {}
         pit_by_h: dict[int, np.ndarray] = {}
         available_horizons: list[int] = []
+        calibration_by_horizon: dict[str, Any] = {}
 
         for horizon in requested_horizons:
             model_paths = {
@@ -593,12 +813,35 @@ def evaluate_xgb_models(
                 continue
 
             pred_matrix = np.zeros((len(X_matrix), len(QUANTILES)), dtype=np.float32)
+            pred_val_matrix = np.zeros(
+                (len(X_val_matrix), len(QUANTILES)), dtype=np.float32
+            )
             for j, q in enumerate(QUANTILES):
                 model = xgb.XGBRegressor()
                 model.load_model(str(model_paths[q]))
                 pred_matrix[:, j] = model.predict(X_matrix)
+                pred_val_matrix[:, j] = model.predict(X_val_matrix)
 
+            y_val_h = y_val[target_col].to_numpy(dtype=np.float32)
             y_h = y_test[target_col].to_numpy(dtype=np.float32)
+
+            if calibrate_quantiles:
+                if len(y_val_h) < CALIBRATION_MIN_SAMPLES:
+                    logger.warning(
+                        "[XGB %s h%d] insufficient val samples for calibration (%d)",
+                        pollutant,
+                        horizon,
+                        len(y_val_h),
+                    )
+                else:
+                    bias, calib_meta = fit_quantile_biases(
+                        y_true=y_val_h,
+                        pred_q=pred_val_matrix,
+                        quantiles=QUANTILES,
+                    )
+                    pred_matrix = apply_quantile_biases(pred_matrix, bias)
+                    calibration_by_horizon[f"h{horizon}"] = calib_meta
+
             metrics_h, pit_h = compute_horizon_metrics(
                 y_true=y_h,
                 pred_q=pred_matrix,
@@ -622,6 +865,7 @@ def evaluate_xgb_models(
             "horizons": available_horizons,
             "quantiles": QUANTILES,
             "by_horizon": by_horizon,
+            "calibration": calibration_by_horizon,
         }
         payloads[pollutant] = QuantilePayload(
             pollutant=pollutant,
@@ -812,6 +1056,167 @@ def build_fair_intersection_comparison(
     return sorted(rows, key=lambda r: (r["pollutant"], r["horizon"]))
 
 
+def build_calibration_benchmark_table(
+    lstm_summary: dict[str, Any],
+    xgb_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for pollutant in sorted(
+        set(lstm_summary.get("pollutants", {})) & set(xgb_summary.get("pollutants", {}))
+    ):
+        l_h = lstm_summary["pollutants"][pollutant].get("by_horizon", {})
+        x_h = xgb_summary["pollutants"][pollutant].get("by_horizon", {})
+        common_h = sorted(
+            int(k[1:]) for k in set(l_h) & set(x_h) if str(k).startswith("h")
+        )
+        for horizon in common_h:
+            lk = l_h[f"h{horizon}"]
+            xk = x_h[f"h{horizon}"]
+
+            def abs_err(value: float, target: float) -> float:
+                return float(abs(float(value) - float(target)))
+
+            rows.append(
+                {
+                    "pollutant": pollutant,
+                    "horizon": int(horizon),
+                    "lstm_cov95": float(lk["coverage_p05_p95"]),
+                    "xgb_cov95": float(xk["coverage_p05_p95"]),
+                    "lstm_cov95_abs_err": abs_err(lk["coverage_p05_p95"], 0.90),
+                    "xgb_cov95_abs_err": abs_err(xk["coverage_p05_p95"], 0.90),
+                    "lstm_tail_p05_abs_err": abs_err(lk["tail_below_p05"], 0.05),
+                    "xgb_tail_p05_abs_err": abs_err(xk["tail_below_p05"], 0.05),
+                    "lstm_tail_p95_abs_err": abs_err(lk["tail_above_p95"], 0.05),
+                    "xgb_tail_p95_abs_err": abs_err(xk["tail_above_p95"], 0.05),
+                    "lstm_tail_p99_abs_err": abs_err(lk["tail_above_p99"], 0.01),
+                    "xgb_tail_p99_abs_err": abs_err(xk["tail_above_p99"], 0.01),
+                    "lstm_interval_width": float(lk["interval_width_p05_p95"]),
+                    "xgb_interval_width": float(xk["interval_width_p05_p95"]),
+                    "lstm_cross_rate": float(lk["quantile_crossing_rate"]),
+                    "xgb_cross_rate": float(xk["quantile_crossing_rate"]),
+                }
+            )
+    return rows
+
+
+def build_split_representativeness_report(
+    lstm_data_dir: Path,
+    xgb_data_dir: Path,
+    pollutants: list[str],
+    requested_horizons: list[int],
+) -> dict[str, Any]:
+    # LSTM split representativeness on core pollutant columns
+    lstm_train = pd.read_csv(lstm_data_dir / "train.csv", parse_dates=["timestamp"])
+    lstm_val = pd.read_csv(lstm_data_dir / "val.csv", parse_dates=["timestamp"])
+    lstm_test = pd.read_csv(lstm_data_dir / "test.csv", parse_dates=["timestamp"])
+
+    lstm_train_rep = summarize_split_representativeness("train", lstm_train, pollutants)
+    lstm_val_rep = summarize_split_representativeness("val", lstm_val, pollutants)
+    lstm_test_rep = summarize_split_representativeness("test", lstm_test, pollutants)
+
+    lstm_val_vs_train = compare_split_representativeness(lstm_train_rep, lstm_val_rep)
+    lstm_test_vs_train = compare_split_representativeness(lstm_train_rep, lstm_test_rep)
+    lstm_test_vs_val = compare_split_representativeness(lstm_val_rep, lstm_test_rep)
+
+    lstm_meta_path = lstm_data_dir / "metadata.json"
+    lstm_sequence_counts: dict[str, Any] = {}
+    if lstm_meta_path.exists():
+        try:
+            meta = json.loads(lstm_meta_path.read_text(encoding="utf-8"))
+            lstm_sequence_counts = meta.get("sequence_materialization", {}).get(
+                "estimated_counts", {}
+            )
+        except Exception:
+            lstm_sequence_counts = {}
+
+    # XGB representativeness on target columns per requested horizon
+    y_train = pd.read_csv(xgb_data_dir / "y_train.csv")
+    y_val = pd.read_csv(xgb_data_dir / "y_val.csv")
+    y_test = pd.read_csv(xgb_data_dir / "y_test.csv")
+
+    per_target_checks: list[dict[str, Any]] = []
+    for pollutant in pollutants:
+        for horizon in requested_horizons:
+            col = f"target_{pollutant}_h{horizon}"
+            if (
+                col not in y_train.columns
+                or col not in y_val.columns
+                or col not in y_test.columns
+            ):
+                continue
+            train_vals = y_train[col].to_numpy(dtype=np.float32)
+            val_vals = y_val[col].to_numpy(dtype=np.float32)
+            test_vals = y_test[col].to_numpy(dtype=np.float32)
+
+            ks_val = ks_2samp(train_vals, val_vals)
+            ks_test = ks_2samp(train_vals, test_vals)
+            ks_val_test = ks_2samp(val_vals, test_vals)
+            per_target_checks.append(
+                {
+                    "target": col,
+                    "train_mean": float(np.mean(train_vals)),
+                    "val_mean": float(np.mean(val_vals)),
+                    "test_mean": float(np.mean(test_vals)),
+                    "train_std": float(np.std(train_vals)),
+                    "val_std": float(np.std(val_vals)),
+                    "test_std": float(np.std(test_vals)),
+                    "ks_train_vs_val": float(ks_val.statistic),
+                    "ks_train_vs_val_pvalue": float(ks_val.pvalue),
+                    "ks_train_vs_test": float(ks_test.statistic),
+                    "ks_train_vs_test_pvalue": float(ks_test.pvalue),
+                    "ks_val_vs_test": float(ks_val_test.statistic),
+                    "ks_val_vs_test_pvalue": float(ks_val_test.pvalue),
+                }
+            )
+
+    return {
+        "lstm": {
+            "train": lstm_train_rep,
+            "val": lstm_val_rep,
+            "test": lstm_test_rep,
+            "val_vs_train": lstm_val_vs_train,
+            "test_vs_train": lstm_test_vs_train,
+            "test_vs_val": lstm_test_vs_val,
+            "sequence_counts_by_horizon": lstm_sequence_counts,
+        },
+        "xgb_target_distribution_checks": per_target_checks,
+    }
+
+
+def load_phase1_quality_context() -> dict[str, Any]:
+    if not PHASE1_RESULTS_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(PHASE1_RESULTS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    out: dict[str, Any] = {
+        "generated_at": payload.get("metadata", {}).get("generated_at"),
+        "all_pollutants_loss_totals": {},
+        "all_pollutants_outlier_summary": {},
+        "region_imbalance": payload.get("region_imbalance", {}),
+    }
+
+    all_loss = payload.get("all_pollutants_loss", {})
+    for pollutant, info in all_loss.items():
+        out["all_pollutants_loss_totals"][pollutant] = info.get("totals", {})
+
+    all_outlier = payload.get("all_pollutants_outlier_analysis", {}).get(
+        "pollutants", {}
+    )
+    for pollutant, info in all_outlier.items():
+        out["all_pollutants_outlier_summary"][pollutant] = {
+            "count": info.get("count"),
+            "negatives": info.get("negatives"),
+            "quantiles": info.get("quantiles", {}),
+            "thresholds": info.get("thresholds", {}),
+            "fraction_above": info.get("fraction_above", {}),
+        }
+
+    return out
+
+
 def _first_common_payload(
     lstm_payloads: dict[str, QuantilePayload],
     xgb_payloads: dict[str, QuantilePayload],
@@ -909,7 +1314,9 @@ def plot_calibration_curve(
     ax.set_ylim(0, 1)
     ax.set_xlabel("Theoretical quantile")
     ax.set_ylabel("Empirical quantile")
-    ax.set_title(f"Quantile Calibration ({pollutant.upper()} h{horizon})")
+    ax.set_title(
+        f"Quantile Calibration (95% CI focus) ({pollutant.upper()} h{horizon})"
+    )
     ax.grid(alpha=0.3)
     ax.legend()
 
@@ -959,7 +1366,7 @@ def plot_coverage_bars(
     l = lstm_payload.metrics["by_horizon"][f"h{horizon}"]
     x = xgb_payload.metrics["by_horizon"][f"h{horizon}"]
 
-    categories = ["Below p5", "p5-p95", "Above p95"]
+    categories = ["Below p5", "Inside 95% CI", "Above p95"]
     lstm_vals = [
         l["tail_below_p05"] * 100.0,
         l["coverage_p05_p95"] * 100.0,
@@ -980,7 +1387,7 @@ def plot_coverage_bars(
     ax.set_xticks(x_pos)
     ax.set_xticklabels(categories)
     ax.set_ylabel("Coverage (%)")
-    ax.set_title(f"Coverage Analysis ({pollutant.upper()} h{horizon})")
+    ax.set_title(f"95% CI Coverage Analysis ({pollutant.upper()} h{horizon})")
     ax.grid(axis="y", alpha=0.3)
     ax.legend()
 
@@ -1192,6 +1599,7 @@ def main() -> None:
         requested_horizons=horizons,
         device=device,
         batch_size=args.batch_size,
+        calibrate_quantiles=bool(args.calibrate_quantiles),
         logger=logger,
     )
 
@@ -1200,10 +1608,19 @@ def main() -> None:
         data_dir=xgb_data_dir,
         pollutants=pollutants,
         requested_horizons=horizons,
+        calibrate_quantiles=bool(args.calibrate_quantiles),
         logger=logger,
     )
 
     comparison_rows = build_comparison_table(lstm_summary, xgb_summary)
+    calibration_rows = build_calibration_benchmark_table(lstm_summary, xgb_summary)
+    representativeness_report = build_split_representativeness_report(
+        lstm_data_dir=lstm_data_dir,
+        xgb_data_dir=xgb_data_dir,
+        pollutants=pollutants,
+        requested_horizons=horizons,
+    )
+    phase1_quality_context = load_phase1_quality_context()
     fair_rows: list[dict[str, Any]] = []
     if args.fair_intersection:
         fair_rows = build_fair_intersection_comparison(
@@ -1235,9 +1652,15 @@ def main() -> None:
         "created_at": datetime.now().isoformat(),
         "pollutants_requested": pollutants,
         "horizons_requested": horizons,
+        "target_quantiles": TARGET_QUANTILES,
+        "quantile_calibration_enabled": bool(args.calibrate_quantiles),
+        "interval_focus": "95_percent_ci_p05_p95",
         "lstm": lstm_summary,
         "xgb": xgb_summary,
         "comparison": comparison_rows,
+        "calibration_benchmark": calibration_rows,
+        "split_representativeness": representativeness_report,
+        "phase1_data_quality_context": phase1_quality_context,
         "fair_intersection_enabled": bool(args.fair_intersection),
         "fair_comparison": fair_rows,
         "visualizations": visuals,

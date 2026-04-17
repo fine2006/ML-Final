@@ -64,7 +64,7 @@ FEATURE_COLUMNS = [
 ]
 
 
-HORIZONS = [1, 24, 672]
+HORIZONS = [1, 24, 168]
 
 
 def setup_logging() -> logging.Logger:
@@ -241,7 +241,7 @@ def add_horizon_targets(
 def estimate_sequence_counts(
     df: pd.DataFrame, horizons: list[int]
 ) -> dict[str, dict[str, int]]:
-    seq_len_by_horizon = {1: 168, 24: 336, 672: 2402}
+    seq_len_by_horizon = {1: 168, 24: 336, 168: 720}
     stats: dict[str, dict[str, int]] = {}
     for horizon in horizons:
         seq_len = int(seq_len_by_horizon.get(horizon, max(2 * horizon, 2)))
@@ -337,6 +337,24 @@ def main() -> None:
             "source_contribution": phase1_results.get("metadata", {}).get(
                 "source_contribution", {}
             ),
+            "phase1_all_pollutants_loss_totals": {
+                pollutant: payload.get("totals", {})
+                for pollutant, payload in phase1_results.get(
+                    "all_pollutants_loss", {}
+                ).items()
+            },
+            "phase1_all_pollutants_outlier_summary": {
+                pollutant: {
+                    "quantiles": payload.get("quantiles", {}),
+                    "thresholds": payload.get("thresholds", {}),
+                    "fraction_above": payload.get("fraction_above", {}),
+                }
+                for pollutant, payload in phase1_results.get(
+                    "all_pollutants_outlier_analysis", {}
+                )
+                .get("pollutants", {})
+                .items()
+            },
         },
         "sensor_error_removal": {
             "enabled": True,
@@ -370,7 +388,7 @@ def main() -> None:
             "representation": "rowwise_features_with_targets",
             "note": (
                 "Sequences are materialized on-the-fly during training using horizon-specific "
-                "lengths: h1=168, h24=336, h672=2402."
+                "lengths: h1=168, h24=336, h168=720."
             ),
             "estimated_counts": sequence_estimate,
         },

@@ -166,7 +166,7 @@ Summary:
 Recommendation:
   - Remove only the identified Bhatagaon Sept 2025 sensor-error spikes (>500 in 3 abrupt clusters)
   - Keep non-impossible high values outside these clusters for LSTM if temporal pattern is plausible
-  - Keep XGB threshold PM2.5 >300 removal as designed
+  - Use uniform XGB outlier-cap policy across pollutants (PM2.5/PM10/NO2/O3)
 ```
 
 ---
@@ -498,7 +498,11 @@ LSTM preprocessing (preprocess_lstm.py):
 
 XGB preprocessing (preprocess_xgb.py):
   - Gap interpolation: ALL gaps (complete)
-  - Outlier removal threshold: PM2.5 >300 (retain this threshold)
+  - Outlier removal thresholds (uniform policy across pollutants):
+    * PM2.5 >300
+    * PM10 >600
+    * NO2 >250
+    * O3 >150
   - Missingness features: Add 6 engineered features
   - Feature engineering: as specified in PREPROCESSING_STRATEGY.md
   - Data retention target from canonical hourly baseline: ~98.0% after baseline filtering,
@@ -513,6 +517,46 @@ Region weighting (training):
     * SILTARA: 1.020×
 
 ```
+
+### 4.3 All-Pollutant Investigation Extension (Completed)
+
+To broaden Phase 1 beyond PM2.5-only diagnostics, `scripts/data_investigation.py`
+now computes outlier-tail and loss-attribution summaries for **all four pollutants**
+(`pm25`, `pm10`, `no2`, `o3`) and writes them to:
+
+- `data/raw/phase1_investigation_results.json`
+  - `all_pollutants_outlier_analysis`
+  - `all_pollutants_loss`
+- visualizations:
+  - `visualizations/phase_1_data_investigation/all_pollutants_distribution_tails.png`
+  - `visualizations/phase_1_data_investigation/all_pollutants_threshold_exceedance.png`
+  - `visualizations/phase_1_data_investigation/all_pollutants_tail_quantiles.png`
+
+Latest totals from the extended run:
+
+```
+PM2.5  : raw 125,017 -> after_sequence 122,487
+         loss_impossible=4,469  interpolated_gain=2,260  loss_outliers=156
+
+PM10   : raw 125,017 -> after_sequence 121,539
+         loss_impossible=5,490  interpolated_gain=2,109  loss_outliers=0
+
+NO2    : raw 125,017 -> after_sequence 122,706
+         loss_impossible=3,853  interpolated_gain=1,645  loss_outliers=0
+
+O3     : raw 125,017 -> after_sequence 122,646
+         loss_impossible=3,568  interpolated_gain=1,281  loss_outliers=0
+```
+
+Interpretation:
+- Impossible/sentinel handling is the dominant quality filter across all pollutants.
+- PM2.5 remains the only pollutant with an explicit fixed XGB outlier cap policy in this project.
+- Other pollutants currently keep high-tail values after impossible-value filtering; this is now explicit and auditable.
+
+Potential next-step ablations enabled by this extension:
+1. Add optional XGB pollutant-specific clipping thresholds for `pm10/no2/o3` (off by default).
+2. Keep LSTM permissive tails while tightening XGB-only caps for tree robustness.
+3. Compare calibration and CRPS impact per pollutant under each clipping policy.
 
 ---
 

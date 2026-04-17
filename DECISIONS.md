@@ -44,7 +44,7 @@ Build a production-ready multi-horizon quantile regression forecasting model for
 - **Total outputs per model**: 5 horizons × 4 quantiles = 20 predictions
 
 Current experimental scope (active implementation):
-- Horizons: `h1`, `h24`, `h672`
+- Horizons: `h1`, `h24`, `h168`
 - LSTM training mode: separated per `(pollutant, horizon)`
 
 ### 1.3 Research Questions
@@ -213,7 +213,7 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 | | - RobustScaler (preserve outlier info via z-score) |
 | | - Minimal features (15) - implicit lags via sequence memory |
 | | **XGB philosophy**: Features ARE information |
-| | - Remove outliers (PM2.5 >300) - tree splits distort on extremes |
+| | - Remove outliers with pollutant-specific caps (PM2.5/PM10/NO2/O3) - tree splits distort on extremes |
 | | - Aggressive imputation + 6 missingness features - encode gaps as predictors |
 | | - No scaling (scale-invariant) |
 | | - Rich features (55-60) - explicit lags, rolling stats, interactions |
@@ -247,12 +247,12 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 | | (B) Fixed length for all horizons |
 | | (C) Horizon-specific calibrated map for reduced scope |
 | **Chosen** | (C) Horizon-specific calibrated map |
-| **Rationale** | - Reduced scope (`h1`,`h24`,`h672`) allows direct sequence-budget tuning per horizon |
-| | - `h672` needs much longer context than `2×h` baseline used previously, but cannot use annual windows on current val/test split |
+| **Rationale** | - Reduced scope (`h1`,`h24`,`h168`) allows direct sequence-budget tuning per horizon |
+| | - `h168` provides meaningful medium-horizon difficulty while keeping runtime and convergence behavior practical |
 | | - Calibrated map preserves short-horizon efficiency and long-horizon context without collapsing validation samples |
-| | **Sequence lengths (active)**: `h1=168`, `h24=336`, `h672=2402` |
-| **Implementation** | `train_lstm.py` accepts `--seq-len-map`; default map is `1:168,24:336,672:2402` |
-| **Evidence** | Feasibility check: `h672 seq_len=8760` gives zero val/test sequences; `seq_len=2402` keeps all regions populated |
+| | **Sequence lengths (active)**: `h1=168`, `h24=336`, `h168=720` |
+| **Implementation** | `train_lstm.py` accepts `--seq-len-map`; default map is `1:168,24:336,168:720` |
+| **Evidence** | `h168` provides strong sequence context while preserving robust sample counts across regions and faster end-to-end experimentation |
 | **Status** | ✓ APPROVED |
 
 ### Decision 4.6: Weather Features - Lagged vs Current vs Future
@@ -336,7 +336,7 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 | | - XGB keeps 70% data (more loss) |
 | | - Each model gets optimized handling |
 | **Implementation** | LSTM: keep PM2.5 if pattern real (post-Phase 1 analysis) |
-| | XGB: remove PM2.5 >300 |
+| | XGB: remove by pollutant caps (PM2.5 >300, PM10 >600, NO2 >250, O3 >150) |
 | **Evidence** | Will validate Phase 5-6 (compare per-region CRPS) |
 | **Status** | ✓ APPROVED (see PREPROCESSING_STRATEGY.md) |
 
@@ -396,25 +396,79 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 | | (B) Train separated models per `(pollutant, horizon)` |
 | **Chosen** | (B) Separated models |
 | **Rationale** | - Joint optimization across distant horizons caused interference and unstable quality |
-| | - Scope reduction to `h1`, `h24`, `h672` enables cleaner diagnosis and faster iteration |
+| | - Scope reduction to `h1`, `h24`, `h168` enables cleaner diagnosis and faster iteration |
 | | - Explicit horizon-specialized training gives each horizon dedicated early stopping and checkpointing |
 | **Implementation** | `train_lstm.py` now trains 12 models (`4 pollutants × 3 horizons`) and saves per-horizon checkpoints (`lstm_quantile_<pollutant>_h<h>.pt`) and predictions (`lstm_predictions_<pollutant>_h<h>.npz`) |
 | | `evaluate.py` and `predict.py` load horizon-specific checkpoints first, with legacy fallback |
 | **Status** | ✓ APPROVED (implemented) |
 
-### Decision 4.14: Experimental h672 Sequence Length Cap
+### Decision 4.14: Horizon Scope Shift from h672 to h168
 
 | Aspect | Details |
 |--------|---------|
-| **Options** | (A) Keep `h672` with `seq_len=672` |
-| | (B) Increase `h672` sequence length aggressively |
-| | (C) Extreme yearly window (`seq_len=8760`) |
-| **Chosen** | (B) with cap `seq_len=2402` |
-| **Rationale** | - User requested larger context for `h672`, but `8760` yields zero val/test sequences on current splits |
-| | - Feasibility check shows practical max with meaningful validation is far below 8760 |
-| | - `2402` keeps all regions populated in train/val/test while substantially expanding long-horizon context |
-| **Implementation** | Horizon sequence defaults now: `h1=168`, `h24=336`, `h672=2402` (overridable by `--seq-len-map`) |
-| **Evidence** | Dataset check on current splits: `h672, seq_len=8760 -> val=0, test=0`; `h672, seq_len=2402 -> train=69799, val=5561, test=5651` sequences |
+| **Options** | (A) Keep `h672` experimental horizon |
+| | (B) Replace `h672` with `h168` |
+| **Chosen** | (B) Replace with `h168` |
+| **Rationale** | - `h672` training is expensive and less aligned with immediate quality target; `h168` offers a better quality/runtime trade-off |
+| | - `h168` keeps medium-horizon forecasting challenge without excessive memory/time burden |
+| | - Enables tighter iteration cycles and clearer calibration benchmarking in one session |
+| **Implementation** | Active horizon scope is now `h1`,`h24`,`h168`; default seq map `1:168,24:336,168:720` |
+| **Evidence** | Observed run behavior and user priority shifted toward high-quality, calibrated 95% CI with practical runtime constraints |
+| **Status** | ✓ APPROVED (implemented) |
+
+### Decision 4.15: Quantile Calibration Policy (Both LSTM and XGB)
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) No calibration |
+| | (B) Calibrate only LSTM |
+| | (C) Calibrate both LSTM and XGB |
+| **Chosen** | (C) Calibrate both |
+| **Rationale** | - Fair probabilistic benchmarking requires both model families to be calibrated the same way |
+| | - Validation-set calibration improves interval reliability without using test labels |
+| | - Product focus is reliable 95% CI behavior (`p05-p95`) rather than only point RMSE |
+| **Implementation** | `evaluate.py --calibrate-quantiles` fits per-quantile additive bias on validation predictions and applies it to test predictions for both model families |
+| | Quantile monotonicity is enforced post-calibration with cumulative max |
+| **Status** | ✓ APPROVED (implemented) |
+
+### Decision 4.16: 95% CI Priority in Benchmarking
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Treat all quantile tails equally |
+| | (B) Prioritize p05-p95 interval quality |
+| **Chosen** | (B) Prioritize 95% CI |
+| **Rationale** | - Operationally, stable 95% confidence bands are the primary uncertainty product |
+| | - Still retain p99 diagnostics, but optimize and report primarily on p05/p95 coverage and tails |
+| **Implementation** | Evaluation summary includes explicit 95% CI-focused calibration benchmark table: coverage error, p05/p95 tail errors, interval width, crossing rate |
+| **Status** | ✓ APPROVED (implemented) |
+
+### Decision 4.17: Extend Phase 1 Investigation to All Pollutants
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Keep Phase 1 analysis PM2.5-centric only |
+| | (B) Extend investigation to PM10/NO2/O3 as well |
+| **Chosen** | (B) Extend to all pollutants |
+| **Rationale** | - PM2.5-only diagnostics hide pollutant-specific tail behavior and potential preprocessing opportunities |
+| | - We need explicit evidence before introducing any pollutant-specific clipping/handling changes |
+| | - Better transparency for future alternative processing approaches |
+| **Implementation** | `scripts/data_investigation.py` now computes all-pollutant outlier-tail summaries + per-pollutant loss attribution, stores them in `phase1_investigation_results.json`, and emits dedicated visualizations |
+| **Status** | ✓ APPROVED (implemented) |
+
+### Decision 4.18: XGB Outlier Policy Consistency Across Pollutants
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Cap PM2.5 only |
+| | (B) Drop caps entirely |
+| | (C) Apply explicit caps to all pollutants |
+| **Chosen** | (C) Apply caps to all pollutants |
+| **Rationale** | - Mixed policy (cap one pollutant only) creates inconsistent feature hygiene for tree models |
+| | - User requested either all-pollutant caps or no caps; all-pollutant caps preserves robust tree split behavior |
+| | - Caps align with Phase 1 all-pollutant tail diagnostics and remain XGB-only (LSTM still preserves plausible tails) |
+| **Implementation** | `preprocess_xgb.py` now uses caps: PM2.5<=300, PM10<=600, NO2<=250, O3<=150 |
+| | Metadata now stores per-pollutant cap policy and removed-row stats |
 | **Status** | ✓ APPROVED (implemented) |
 
 ---
@@ -468,8 +522,8 @@ Source artifacts:
 
 Scope note:
 - Current checkpoint includes `pm25` only.
-- LSTM currently has trained/evaluated horizons `h1`, `h24`, `h672`.
-- XGB currently has trained/evaluated horizons `h1`, `h24`, `h672`.
+- LSTM currently has trained/evaluated horizons `h1`, `h24`, `h168`.
+- XGB currently has trained/evaluated horizons `h1`, `h24`, `h168`.
 
 ### 6.1 LSTM Quantile Regression (Partial)
 
@@ -513,8 +567,8 @@ RMSE comparison on overlap:
 
 Checkpoint interpretation:
 - Current metrics in this section are stale and retained for historical context.
-- Active pipeline now uses horizon-separated models on reduced scope (`h1`,`h24`,`h672`),
-  with `h672` experimental context (`seq_len=2402`) and per-horizon checkpoints.
+- Active pipeline now uses horizon-separated models on reduced scope (`h1`,`h24`,`h168`),
+  with per-horizon checkpoints and validation-based quantile calibration support.
 
 ### 6.4 Per-Region Fairness (Partial)
 
@@ -698,14 +752,16 @@ Region weights for training (calculated):
 | 4.2 | Output type | Quantile regression | ✓ APPROVED | 2 | 4 quantiles per horizon |
 | 4.3 | Preprocessing | Dual pipelines | ✓ APPROVED | 3 | LSTM vs XGB optimized |
 | 4.4 | Loss function | Region-weighted multi-quantile | ✓ APPROVED | 5 | Pinball loss per quantile |
-| 4.5 | Sequence length | Horizon-specific calibrated map | ✓ APPROVED | 5 | h1=168, h24=336, h672=2402 |
+| 4.5 | Sequence length | Horizon-specific calibrated map | ✓ APPROVED | 5 | h1=168, h24=336, h168=720 |
 | 4.6 | Weather features | Lagged (t-24 to t-1) | ✓ APPROVED | 3 | No future leakage |
 | 4.7 | Baseline model | XGBoost | ✓ APPROVED | 5 | Fair LSTM comparison |
 | 4.8 | Train/val/test split | 70/15/15 time-based | ✓ APPROVED | 4 | Walk-forward after Phase 4 |
 | 4.9 | Outlier handling | Asymmetric LSTM/XGB | ✓ APPROVED | 3 | LSTM keeps, XGB removes |
 | 4.10 | Batch sampling | Stratified per region | ✓ APPROVED | 5 | Fairness enforcement |
 | 4.13 | LSTM training mode | Separated per horizon | ✓ APPROVED | 5 | 12 models (`4×3`) |
-| 4.14 | h672 context window | seq_len=2402 | ✓ APPROVED | 5 | 8760 infeasible on val/test |
+| 4.14 | Horizon scope | h1/h24/h168 | ✓ APPROVED | 5 | Replaced h672 |
+| 4.15 | Quantile calibration | Both LSTM + XGB | ✓ APPROVED | 6 | Validation bias calibration |
+| 4.16 | Interval priority | 95% CI focus | ✓ APPROVED | 6 | p05-p95 primary KPI |
 | 5.1 | Evaluation metrics | CRPS + PIT + RMSE | ✓ APPROVED | 6 | Quantile + accuracy validation |
 | 5.2 | Region fairness | Per-region + weighted | ✓ APPROVED | 6 | Verify imbalance mitigation |
 
@@ -727,7 +783,7 @@ Region weights for training (calculated):
 
 ### 9.3 From Phase 5 (Training)
 - **Finding 1**: Phase 5 scripts (`train_lstm.py`, `train_xgb.py`) are operational and produce model + summary artifacts.
-- **Finding 2**: LSTM now trains separated models per `(pollutant,horizon)` on scope `h1,h24,h672`, with configurable `--seq-len-map`.
+- **Finding 2**: LSTM now trains separated models per `(pollutant,horizon)` on scope `h1,h24,h168`, with configurable `--seq-len-map`.
 - **Impact**: Better horizon isolation, per-horizon early stopping/checkpointing, and faster diagnosis for quality tuning.
 
 ### 9.4 From Phase 6 (Evaluation)

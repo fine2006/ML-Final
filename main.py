@@ -110,7 +110,7 @@ def print_evaluation_snapshot() -> None:
         horizon = int(row.get("horizon"))
         by_key[(pollutant, horizon)] = row
 
-    preferred_horizons = [24, 1, 672]
+    preferred_horizons = [24, 1, 168]
     shown = 0
     for (pollutant, horizon), row in sorted(by_key.items()):
         if horizon not in preferred_horizons:
@@ -184,7 +184,7 @@ def main() -> None:
     parser.add_argument(
         "--horizons",
         type=str,
-        default="1,24,672",
+        default="1,24,168",
         help="Comma-separated horizons in hours",
     )
     parser.add_argument(
@@ -209,7 +209,7 @@ def main() -> None:
         "--lstm-seq-len-map",
         type=str,
         default="",
-        help="Optional LSTM horizon:seq_len map, e.g. 1:168,24:336,672:2402",
+        help="Optional LSTM horizon:seq_len map, e.g. 1:168,24:336,168:720",
     )
     parser.add_argument("--fair-bench", action="store_true")
     parser.add_argument("--predict-only", action="store_true")

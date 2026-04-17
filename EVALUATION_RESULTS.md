@@ -1,11 +1,11 @@
 # Evaluation Results
 
 ## Run Context
-- Date (latest checked): 2026-04-16
+- Date (latest checked): 2026-04-17
 - Environment: `uv run python ...`
 - Evaluation script: `scripts/evaluate.py`
 - Primary output: `models/evaluation_summary.json`
-- Scope of this checkpoint: `pm25`; shared LSTM/XGB horizons = `h1`, `h12`.
+- Active scope: all pollutants (`pm25, pm10, no2, o3`) on horizons `h1, h24, h168`
 
 ## Artifacts Produced
 - Summary JSON: `models/evaluation_summary.json`
@@ -20,73 +20,72 @@
   - `predictions_vs_actual_by_horizon.png`
   - `final_comparison_summary_table.png`
 
-## LSTM vs XGB (PM2.5, overlap horizons)
+## What Changed in This Phase
+- The evaluation pipeline is now all-pollutant aware end-to-end.
+- Quantile calibration can be applied to **both** model families with:
+  - `--calibrate-quantiles`
+- Benchmarking now prioritizes 95% interval quality (`p05-p95`) while keeping `p99` diagnostics.
+- Evaluation summary now includes richer context blocks:
+  - `split_representativeness`
+  - `phase1_data_quality_context`
+  - `calibration_benchmark`
 
-### h1 (t+1h)
-- RMSE: LSTM `10.1547` vs XGB `6.7111` (LSTM `-51.31%` worse)
-- CRPS: LSTM `15.2498` vs XGB `7.0665` (LSTM `-115.80%` worse)
-- Coverage p05-p95: LSTM `84.54%`, XGB `82.31%`
+## 95% CI-Centric Evaluation Protocol
+- Run command (all pollutants, all active horizons):
 
-### h12 (t+12h)
-- RMSE: LSTM `12.9237` vs XGB `11.6442` (LSTM `-10.99%` worse)
-- CRPS: LSTM `21.4210` vs XGB `17.2977` (LSTM `-23.84%` worse)
-- Coverage p05-p95: LSTM `79.59%`, XGB `75.50%`
+```bash
+MPLBACKEND=Agg uv run python scripts/evaluate.py \
+  --pollutants pm25,pm10,no2,o3 \
+  --horizons 1,24,168 \
+  --device auto \
+  --fair-intersection \
+  --calibrate-quantiles
+```
 
-## Calibration (PIT + coverage tails)
+- Core uncertainty metrics reported per pollutant/horizon:
+  - `coverage_p05_p95`
+  - `tail_below_p05`
+  - `tail_above_p95`
+  - `interval_width_p05_p95`
+  - `quantile_crossing_rate`
+  - PIT KS / p-value
 
-### PIT KS (uniformity test)
-- LSTM h1: KS `0.1338`, p-value `0.0000`
-- LSTM h12: KS `0.1939`, p-value `0.0000`
-- XGB h1: KS `0.1617`, p-value `0.0000`
-- XGB h12: KS `0.1843`, p-value `0.0000`
-- XGB h24: KS `0.2041`, p-value `0.0000`
+## Data Quality Context (All Pollutants)
+
+Phase 1 now contributes all-pollutant loss and outlier-tail diagnostics into
+evaluation outputs. This gives model differences clearer causal context.
+
+Latest Phase 1 totals (canonical hourly baseline `125,017` rows):
+- `pm25`: sequence-ready `122,487` (`loss_impossible=4,469`, `loss_outliers=156`)
+- `pm10`: sequence-ready `121,539` (`loss_impossible=5,490`, `loss_outliers=0`)
+- `no2`: sequence-ready `122,706` (`loss_impossible=3,853`, `loss_outliers=0`)
+- `o3`: sequence-ready `122,646` (`loss_impossible=3,568`, `loss_outliers=0`)
 
 Interpretation:
-- All tested models fail strict PIT uniformity at this checkpoint (`p < 0.05`).
-- LSTM has lower PIT KS than XGB at shared horizons, indicating relatively better calibration shape.
+- Pollutant-specific quality profiles differ materially, especially in impossible-value frequency.
+- PM2.5 is currently the only pollutant with a fixed XGB clip policy (`<=300`) in this pipeline.
+- These differences are now directly embedded in `evaluation_summary.json` for downstream interpretation.
 
-## Fair-Benchmark Mode
+## Representativeness Checks
+- `split_representativeness` now reports:
+  - region mix shifts (train vs val/test)
+  - pollutant-level distribution shifts for LSTM rows
+  - KS checks on XGB target distributions (`train-vs-val`, `train-vs-test`, `val-vs-test`)
+- This helps verify val/test are reasonably representative before trusting benchmark deltas.
 
-To avoid row-misalignment bias between sequence and tabular evaluations, the pipeline now supports:
+## Calibration Benchmark Table
+- `calibration_benchmark` now compares LSTM and XGB per pollutant/horizon on:
+  - `cov95` absolute error from `0.90`
+  - `p05` / `p95` tail absolute errors from `0.05`
+  - `p99` tail absolute error from `0.01`
+  - interval width and crossing rate
 
-```bash
-uv run python scripts/evaluate.py --pollutants pm25,pm10,no2,o3 --horizons 1,12,24,168,672 --fair-intersection
-```
+Recommended acceptance thresholds for production-style confidence intervals:
+- `|coverage_p05_p95 - 0.90| <= 0.03`
+- `|tail_below_p05 - 0.05| <= 0.02`
+- `|tail_above_p95 - 0.05| <= 0.02`
+- `quantile_crossing_rate <= 0.005`
 
-This computes LSTM vs XGB only on common `(region, timestamp)` rows and writes:
-- `models/fair_benchmark_summary.json`
-
-The same mode is exposed in the orchestrator:
-
-```bash
-uv run python main.py --evaluate-only --fair-bench --pollutants pm25,pm10,no2,o3 --horizons 1,12,24,168,672
-```
-
-### Tail behavior
-- LSTM h1: below p5 `9.03%`, above p95 `6.43%`, above p99 `1.75%`
-- LSTM h12: below p5 `7.92%`, above p95 `12.49%`, above p99 `6.65%`
-- XGB h1: below p5 `10.66%`, above p95 `7.03%`, above p99 `3.42%`
-- XGB h12: below p5 `18.11%`, above p95 `6.39%`, above p99 `1.45%`
-
-## Per-region Fairness Snapshot
-
-### h12 fairness ratio (max/min RMSE)
-- LSTM: `1.353x` (meets target)
-- XGB: `1.543x` (above target)
-
-### h12 RMSE by region
-- LSTM: AIIMS `16.1927`, Bhatagaon `12.3836`, IGKV `11.9663`, SILTARA `14.3525`
-- XGB: AIIMS `11.0295`, Bhatagaon `13.0990`, IGKV `8.4873`, SILTARA `13.1204`
-
-## Important Scope Limitations
-- LSTM is not yet trained for `h24`, `h168`, `h672` in this checkpoint.
-- Only `pm25` is trained/evaluated currently.
-- Current LSTM training summary shows smoke-scale sequence sample counts (`train=256`, `val=64`, `test=64`), so these are not final production-quality results.
-
-## Recommended Next Evaluation Pass
-- Complete full training for all pollutants (`pm25`, `pm10`, `no2`, `o3`) and all horizons (`1,12,24,168,672`).
-- Re-run `scripts/evaluate.py` on full artifacts.
-- Re-check:
-  - long-horizon LSTM advantage (`h168`, `h672`),
-  - fairness target (`max/min RMSE < 1.5x`),
-  - PIT calibration (p-value threshold > 0.05 where feasible).
+## Notes
+- Metrics vary by run depending on which model artifacts are present in `models/`.
+- For final reporting, always regenerate `evaluation_summary.json` after the latest full training/import.

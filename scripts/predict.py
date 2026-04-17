@@ -1,8 +1,9 @@
 """
 Single-region, single-horizon multi-pollutant inference for LSTM quantile models.
 
-This script returns p05/p50/p95/p99 for all requested pollutants for one region
-at one selected horizon.
+This script returns quantile forecasts with a 95% CI focus (p05, p50, p95)
+and optional p99 diagnostic for all requested pollutants for one region at one
+selected horizon.
 """
 
 from __future__ import annotations

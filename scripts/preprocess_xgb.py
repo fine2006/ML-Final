@@ -50,7 +50,16 @@ WEATHER = ["temperature", "humidity", "wind_speed", "wind_direction"]
 LAGS = [1, 3, 6, 12, 24, 48, 168]
 WEATHER_LAGS = [1, 6, 12, 24]
 ROLLING_WINDOWS = [6, 12, 24]
-HORIZONS = [1, 24, 672]
+HORIZONS = [1, 24, 168]
+
+# Apply explicit outlier clipping policy consistently across all pollutants.
+# These are XGB-only caps (LSTM keeps plausible outliers by design).
+XGB_POLLUTANT_CAPS = {
+    "pm25": 300.0,
+    "pm10": 600.0,
+    "no2": 250.0,
+    "o3": 150.0,
+}
 
 
 def setup_logging() -> logging.Logger:
@@ -234,6 +243,36 @@ def add_targets(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def apply_xgb_outlier_caps(
+    df: pd.DataFrame,
+    caps: dict[str, float],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    out = df.copy()
+    n_before = len(out)
+
+    keep_mask = pd.Series(True, index=out.index)
+    removal_by_pollutant: dict[str, int] = {}
+
+    for pollutant, cap in caps.items():
+        invalid = (~out[pollutant].isna()) & (
+            (out[pollutant] < 0) | (out[pollutant] > float(cap))
+        )
+        removal_by_pollutant[pollutant] = int(invalid.sum())
+        keep_mask &= ~invalid
+
+    out = out.loc[keep_mask].copy()
+    n_after = len(out)
+
+    stats = {
+        "caps": {k: float(v) for k, v in caps.items()},
+        "rows_before": int(n_before),
+        "rows_after": int(n_after),
+        "rows_removed_total": int(n_before - n_after),
+        "rows_flagged_by_pollutant": removal_by_pollutant,
+    }
+    return out, stats
+
+
 def split_feature_target_columns(df: pd.DataFrame) -> tuple[list[str], list[str]]:
     target_cols = [c for c in df.columns if c.startswith("target_")]
     feature_cols = [
@@ -268,10 +307,14 @@ def main() -> None:
 
     xgb_df, missing_stats = apply_xgb_missing_policy(canonical_df)
 
-    before_outlier = len(xgb_df)
-    xgb_df = xgb_df[(xgb_df["pm25"] >= 0) & (xgb_df["pm25"] <= 300)].copy()
+    xgb_df, outlier_stats = apply_xgb_outlier_caps(xgb_df, XGB_POLLUTANT_CAPS)
     logger.info(
-        "Removed %d rows by XGB PM2.5 outlier policy", before_outlier - len(xgb_df)
+        "Removed %d rows by XGB pollutant caps policy",
+        outlier_stats["rows_removed_total"],
+    )
+    logger.info(
+        "Rows flagged by pollutant caps: %s",
+        outlier_stats["rows_flagged_by_pollutant"],
     )
 
     xgb_df = add_xgb_features(xgb_df)
@@ -322,6 +365,24 @@ def main() -> None:
             "source_contribution": phase1_results.get("metadata", {}).get(
                 "source_contribution", {}
             ),
+            "phase1_all_pollutants_loss_totals": {
+                pollutant: payload.get("totals", {})
+                for pollutant, payload in phase1_results.get(
+                    "all_pollutants_loss", {}
+                ).items()
+            },
+            "phase1_all_pollutants_outlier_summary": {
+                pollutant: {
+                    "quantiles": payload.get("quantiles", {}),
+                    "thresholds": payload.get("thresholds", {}),
+                    "fraction_above": payload.get("fraction_above", {}),
+                }
+                for pollutant, payload in phase1_results.get(
+                    "all_pollutants_outlier_analysis", {}
+                )
+                .get("pollutants", {})
+                .items()
+            },
         },
         "sensor_error_removal": {
             "enabled": True,
@@ -351,11 +412,7 @@ def main() -> None:
                 "wind_direction[t]",
             ],
         },
-        "outlier_policy": {
-            "pm25_min": 0,
-            "pm25_max": 300,
-            "rows_removed": int(before_outlier - len(xgb_df)),
-        },
+        "outlier_policy": outlier_stats,
         "shapes": {
             "X_train": list(X_train.shape),
             "y_train": list(y_train.shape),
