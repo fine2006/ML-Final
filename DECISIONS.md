@@ -511,6 +511,50 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 | **Implementation** | Notebook run profile uses: `--seq-len-map 1:24,24:24,168:168`, `--hidden-dim 64`, `--num-layers 2`, `--num-heads 2`, `--dropout 0.35`, `--head-dropout 0.30`, `--weight-decay 5e-4`, `--lr 3e-4`, `--epochs 40`, `--patience 6`, `--scheduler-patience 2` |
 | **Status** | ✓ APPROVED (run-profile; non-default) |
 
+### Decision 4.22: Single-Target LSTM with Multi-Pollutant Context Contract
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Single-target models using only self-pollutant inputs |
+| | (B) Single-target models using all pollutant context inputs |
+| | (C) Multi-output all-pollutant model per horizon |
+| **Chosen** | (B) Single-target output with all-pollutant input context |
+| **Rationale** | - Pollutants have distinct target dynamics and benefit from target-specific optimization/calibration |
+| | - Cross-pollutant co-movement still contains predictive signal (e.g., PM2.5/PM10 coupling), so context channels should remain available to each model |
+| | - Supports future onboarding of new pollutants (SOx/NOx) without changing core training/evaluation contracts |
+| **Implementation** | `train_lstm.py` now enforces input-target contract at runtime: required context channels include `pm25,pm10,no2,o3`; output target remains exactly `target_<pollutant>_h<horizon>` |
+| | Added `PIPELINE.md` as pipeline architecture source for reproducible single-target + multi-pollutant-context workflow and extension path |
+| **Status** | ✓ APPROVED (implemented) |
+
+### Decision 4.23: Pollutant-Specific h168-First Sweep Workflow
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Keep one shared sweep config across all pollutants and horizons |
+| | (B) Use pollutant-specific sweep configs, starting with h168 focus |
+| **Chosen** | (B) Pollutant-specific, h168-first |
+| **Rationale** | - Empirical h168 behavior differs materially by pollutant (pm25/pm10 vs no2/o3) |
+| | - Long-horizon quality is the current bottleneck and should be optimized first for fastest signal |
+| | - Pollutant-specific seeds improve extensibility to future pollutant onboarding without changing core pipeline contract |
+| **Implementation** | `NOTEBOOK_RUN.md` now defines a pollutant-specific h168 workflow: per-pollutant training calls, evaluation snapshots, and rank tables sourced from `models/experiments` |
+| | Uses `--summary-path` in `train_lstm.py` for clean per-run experiment tracking |
+| **Status** | ✓ APPROVED (implemented) |
+
+### Decision 4.24: Single-Latency Feature Contract (No Double Weather Lag)
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Keep explicit weather lag transforms in addition to past-only window slicing |
+| | (B) Remove explicit global weather lag if source rows are already delayed/finalized by >=1h |
+| **Chosen** | (B) Remove extra weather lag; apply latency exactly once |
+| **Rationale** | - Existing setup combined delayed feature rows and additional weather lag, effectively pushing weather signal too far back |
+| | - This can hurt short/mid-horizon quality (notably h1/h24) without improving leakage safety |
+| | - Leakage is still prevented by strict past-only sequence construction (no anchor/future rows) |
+| **Implementation** | `preprocess_lstm.py` now uses raw weather columns (`temperature`,`humidity`,`wind_speed`,`wind_direction`) in feature set; explicit `*_lag_1` weather columns removed |
+| | `preprocess_xgb.py` no longer applies global weather `shift(1)` before lag feature generation |
+| | Metadata leakage policy now documents single-latency contract (source delay OR feature lag, not both) |
+| **Status** | ✓ APPROVED (implemented) |
+
 ---
 
 ## 5. Evaluation Framework

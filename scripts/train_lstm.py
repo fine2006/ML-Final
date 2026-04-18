@@ -582,6 +582,30 @@ def train_for_pollutant(
     metadata = split_tables.metadata
     feature_cols = metadata["feature_columns"]
     target_cols = [f"target_{pollutant}_h{horizon}"]
+
+    required_context_pollutants = ["pm25", "pm10", "no2", "o3"]
+    missing_context = [p for p in required_context_pollutants if p not in feature_cols]
+    if missing_context:
+        raise ValueError(
+            f"Missing required multi-pollutant context features for {pollutant} h{horizon}: "
+            f"{missing_context}. Found features={feature_cols}"
+        )
+
+    expected_target = f"target_{pollutant}_h{horizon}"
+    if len(target_cols) != 1 or target_cols[0] != expected_target:
+        raise ValueError(
+            "Single-target contract violated: "
+            f"expected target_cols=['{expected_target}'], got {target_cols}"
+        )
+
+    logger.info(
+        "[%s h%d] input-target contract: inputs include all pollutants=%s, target=%s",
+        pollutant,
+        horizon,
+        required_context_pollutants,
+        expected_target,
+    )
+
     horizons = [horizon]
     horizon_loss_weights = [1.0]
     region_weights = {
@@ -1035,6 +1059,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-train-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
     parser.add_argument("--max-test-samples", type=int, default=None)
+    parser.add_argument(
+        "--summary-path",
+        type=str,
+        default=str(MODELS_DIR / "lstm_training_summary.json"),
+        help="Path to write training summary JSON",
+    )
     return parser.parse_args()
 
 
@@ -1136,7 +1166,8 @@ def main() -> None:
             pollutant_result[f"h{horizon}"] = horizon_result
         results["pollutants"][pollutant] = pollutant_result
 
-    out_path = MODELS_DIR / "lstm_training_summary.json"
+    out_path = Path(args.summary_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as handle:
         json.dump(results, handle, indent=2)
     logger.info("Saved LSTM training summary: %s", out_path)

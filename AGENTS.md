@@ -86,6 +86,7 @@ This is a **unified index** combining all build instructions. Navigation by sect
 | **DATA_LOADING.md** | Excel file parsing guide + code examples | 520 |
 | **SCRIPT_TEMPLATES.md** | Boilerplate for all pipeline scripts | 680 |
 | **PROJECT_STRUCTURE.md** | Directory layout with file purposes | 610 |
+| **PIPELINE.md** | ML pipeline architecture (single-target, multi-pollutant context, reproducible extension path) | NEW |
 
 **Total**: 5,953 lines of detailed specifications (95% complete)
 
@@ -310,6 +311,11 @@ visualizations/                  # Output plots & results
 2. Read Options/Chosen/Rationale/Evidence
 3. Follow references to detailed docs (ARCHITECTURE.md, PREPROCESSING_STRATEGY.md)
 
+### "I need pipeline architecture guidance (not developer docs)"
+1. Read **PIPELINE.md** first (single-target LSTM pipeline contract)
+2. Follow the stage order in PIPELINE.md (canonical data -> quality gate -> preprocessing -> training -> calibration -> evaluation)
+3. For new pollutant onboarding (e.g., SOx/NOx), use PIPELINE.md section "Extending to New Pollutants"
+
 ---
 
 ## Critical Implementation Notes
@@ -322,9 +328,10 @@ This is the most critical requirement. Verify explicitly:
 # 1. All features use indices ≤ t (current time)
 assert all(feature.lag >= 0 for feature in features), "Found negative lag (future data)!"
 
-# 2. Weather features ONLY t-24 to t-1 (never t, never future)
-assert "weather[t]" not in feature_names, "Using current weather (not available at forecast time)!"
-assert all("weather_lag" in f for f in weather_features), "Weather not lagged!"
+# 2. Feature availability contract (lag applied once)
+# If source table is already delayed/finalized by >=1h, do NOT add extra lag transforms.
+# Features must still be past-only by window construction (indices <= anchor-1).
+assert max(feature_timestamps) <= anchor_time - pd.Timedelta(hours=1), "Feature row leaks anchor/future time!"
 
 # 3. Target uses t+horizon (never t+horizon+1 or later)
 assert target_time == t + horizon, "Target is in the future!"
@@ -424,8 +431,9 @@ test = data[data.timestamp >= '2024-07-01']
 **Root**: Weather features include t or future (today's weather predicts tomorrow)
 
 **Fix**:
-1. Audit every weather feature; ensure only t-24 to t-1 used
-2. Never use: weather[t], weather[t+1], weather[t+horizon]
+1. Audit feature windowing; ensure features never include anchor/future rows
+2. Apply data latency exactly once (source delay OR feature lag, not both)
+3. Never use: any feature at t+1 or later
 3. Spot-check 5 samples manually
 
 ### Pitfall 5: Train/Val/Test Mixed

@@ -201,9 +201,6 @@ def apply_xgb_missing_policy(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
 def add_xgb_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.sort_values(["region", "timestamp"]).copy()
 
-    for weather_col in WEATHER:
-        out[weather_col] = out.groupby("region")[weather_col].shift(1)
-
     for pollutant in POLLUTANTS:
         for lag in LAGS:
             out[f"{pollutant}_lag_{lag}"] = out.groupby("region")[pollutant].shift(lag)
@@ -403,13 +400,19 @@ def main() -> None:
             "stats": missing_stats,
         },
         "leakage_policy": {
-            "weather_features_use_lagged_values_only": True,
-            "weather_current_values_shifted_by": 1,
+            "data_availability_contract": (
+                "Feature rows are assumed to be delayed/finalized by at least 1 hour. "
+                "No additional global weather shift is applied before lag feature generation."
+            ),
+            "weather_features_use_raw_columns": True,
+            "weather_current_values_shifted_by": 0,
+            "feature_engineering_lags": {
+                "pollutant_lags": LAGS,
+                "weather_lags": WEATHER_LAGS,
+            },
             "forbidden": [
-                "temperature[t]",
-                "humidity[t]",
-                "wind_speed[t]",
-                "wind_direction[t]",
+                "future_weather[t+1:]",
+                "future_pollutants[t+1:]",
             ],
         },
         "outlier_policy": outlier_stats,

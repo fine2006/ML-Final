@@ -50,10 +50,10 @@ FEATURE_COLUMNS = [
     "pm10",
     "no2",
     "o3",
-    "temperature_lag_1",
-    "humidity_lag_1",
-    "wind_speed_lag_1",
-    "wind_direction_lag_1",
+    "temperature",
+    "humidity",
+    "wind_speed",
+    "wind_direction",
     "hour_sin",
     "hour_cos",
     "day_sin",
@@ -117,13 +117,6 @@ def add_region_ids(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
     mapping = {region: idx for idx, region in enumerate(regions)}
     out["region_id"] = out["region"].map(mapping).astype(float)
     return out, mapping
-
-
-def add_weather_lags(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.sort_values(["region", "timestamp"]).copy()
-    for col in ["temperature", "humidity", "wind_speed", "wind_direction"]:
-        out[f"{col}_lag_1"] = out.groupby("region")[col].shift(1)
-    return out
 
 
 def apply_lstm_missing_policy(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
@@ -285,7 +278,6 @@ def main() -> None:
     missing_handled_df, gap_stats = apply_lstm_missing_policy(canonical_df)
     missing_handled_df = add_time_features(missing_handled_df)
     missing_handled_df, region_map = add_region_ids(missing_handled_df)
-    missing_handled_df = add_weather_lags(missing_handled_df)
 
     boundaries = split_timestamps(missing_handled_df)
     train_df, val_df, test_df = apply_time_split(missing_handled_df, boundaries)
@@ -375,13 +367,16 @@ def main() -> None:
             "stats": gap_stats,
         },
         "leakage_policy": {
-            "weather_features_use_lagged_values_only": True,
-            "weather_lags_included": [1],
+            "data_availability_contract": (
+                "Feature table is assumed to be delayed and finalized at least 1 hour. "
+                "No explicit additional weather lag is applied. Training/inference windows use "
+                "rows strictly before the anchor timestamp."
+            ),
+            "weather_features_use_raw_columns": True,
+            "weather_lags_included": [],
             "forbidden": [
-                "temperature[t]",
-                "humidity[t]",
-                "wind_speed[t]",
-                "wind_direction[t]",
+                "future_weather[t+1:]",
+                "future_pollutants[t+1:]",
             ],
         },
         "sequence_materialization": {

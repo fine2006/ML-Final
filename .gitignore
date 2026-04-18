@@ -75,3 +75,4 @@ models/*.bin
 
 # Optional: if you want to force retraining XGB too, uncomment next line
 # models/xgb_quantile_*.json
+log*.txt

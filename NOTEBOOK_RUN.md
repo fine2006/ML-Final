@@ -1,12 +1,12 @@
-# Notebook Run Script (Aggressive Regularization Sweep)
+# Notebook Run Script (Pollutant-Specific h168 Focus)
 
-This runbook is for the new recovery profile:
+This runbook focuses on long-horizon (`h168`) model quality with pollutant-specific sweeps.
 
-- Horizons: `h1,h24,h168`
-- Sequence lengths: `seq_len=max(24,horizon)` -> `h1=24,h24=24,h168=168`
-- LSTM architecture: reduced capacity (`hidden_dim=64`, `num_layers=2`, `num_heads=2`)
-- Stronger regularization and earlier stopping (`dropout/head_dropout/weight_decay` + lower patience)
-- Evaluation with fair intersection + quantile calibration
+Core contract:
+
+- Train one model per `(pollutant, horizon)` target.
+- Every model still sees all pollutant channels in lookback (`pm25`,`pm10`,`no2`,`o3`) plus weather/time context.
+- Start from `h168` only, then move to shorter horizons if needed.
 
 All code blocks are notebook-ready with `# %% [code]` headers.
 
@@ -40,7 +40,28 @@ PIPELINE_START_TS = time.time()
 !export MPLBACKEND=Agg && cd ML-Final && uv run python scripts/preprocess_lstm.py && uv run python scripts/preprocess_xgb.py
 ```
 
-## 3) Verify XGB models are already present locally
+## 2.1) Confirm single-latency feature contract in metadata
+
+```python
+# %% [code]
+import json
+import pathlib
+
+ROOT = pathlib.Path("ML-Final").resolve()
+
+lstm_meta = json.loads((ROOT / "data" / "preprocessed_lstm_v1" / "metadata.json").read_text())
+xgb_meta = json.loads((ROOT / "data" / "preprocessed_xgb_v1" / "metadata.json").read_text())
+
+print("LSTM feature columns:", lstm_meta["feature_columns"])
+assert "temperature" in lstm_meta["feature_columns"]
+assert "temperature_lag_1" not in lstm_meta["feature_columns"]
+print("LSTM leakage policy:", lstm_meta["leakage_policy"])
+
+print("XGB leakage policy:", xgb_meta["leakage_policy"])
+assert xgb_meta["leakage_policy"]["weather_current_values_shifted_by"] == 0
+```
+
+## 3) Verify XGB model files exist locally
 
 ```python
 # %% [code]
@@ -52,7 +73,6 @@ MODELS = ROOT / "models"
 MODELS.mkdir(parents=True, exist_ok=True)
 
 rx = re.compile(r"^xgb_quantile_(pm25|pm10|no2|o3)_h(1|24|168)_q(05|50|95|99)\.json$")
-
 expected = {
     f"xgb_quantile_{p}_h{h}_q{q}.json"
     for p in ["pm25", "pm10", "no2", "o3"]
@@ -62,134 +82,177 @@ expected = {
 
 present = {p.name for p in MODELS.glob("xgb_quantile_*.json") if rx.match(p.name)}
 missing = sorted(expected - present)
-
 print("xgb model count:", len(present))
 if missing:
     print("missing examples:", missing[:10])
-    raise RuntimeError(
-        f"Missing {len(missing)} expected XGB model files in {MODELS}. "
-        "Copy your precomputed XGB artifacts into ML-Final/models before evaluation."
-    )
+    raise RuntimeError(f"Missing {len(missing)} expected XGB files in {MODELS}")
 ```
 
-## 4) Train LSTM (new aggressive run profile)
-
-This runs all pollutants and all three horizons in one command using:
-
-- `seq_len_map: 1:24,24:24,168:168`
-- `hidden_dim=64`, `num_layers=2`, `num_heads=2`
-- `dropout=0.35`, `head_dropout=0.30`
-- `lr=3e-4`, `weight_decay=5e-4`
-- `epochs=40`, `patience=6`
-- scheduler: `factor=0.5`, `patience=2`
-- gradient clipping: `max_grad_norm=1.0`
-
-```python
-# %% [code]
-import os
-import subprocess
-import pathlib
-
-ROOT = pathlib.Path("ML-Final").resolve()
-env = os.environ.copy()
-env["PYTHONUNBUFFERED"] = "1"
-
-subprocess.run(
-    [
-        "uv", "run", "python", "scripts/train_lstm.py",
-        "--pollutants", "pm25,pm10,no2,o3",
-        "--horizons", "1,24,168",
-        "--seq-len-map", "1:24,24:24,168:168",
-        "--device", "cuda",
-        "--batch-size", "128",
-        "--epochs", "40",
-        "--patience", "6",
-        "--lr", "3e-4",
-        "--hidden-dim", "64",
-        "--num-layers", "2",
-        "--num-heads", "2",
-        "--dropout", "0.35",
-        "--head-dropout", "0.30",
-        "--weight-decay", "5e-4",
-        "--scheduler-factor", "0.5",
-        "--scheduler-patience", "2",
-        "--max-grad-norm", "1.0",
-        "--min-attn-window", "24",
-    ],
-    cwd=ROOT,
-    env=env,
-    check=True,
-)
-```
-
-## 5) Quick sanity check of generated LSTM artifacts
+## 4) Utility helpers for experiment runs
 
 ```python
 # %% [code]
 import json
 import pathlib
+import subprocess
 
 ROOT = pathlib.Path("ML-Final").resolve()
 MODELS = ROOT / "models"
+EXP = MODELS / "experiments"
+EXP.mkdir(parents=True, exist_ok=True)
 
-summary_path = MODELS / "lstm_training_summary.json"
-if not summary_path.exists():
-    raise RuntimeError(f"Missing {summary_path}")
+def run_train(tag, pollutant, seq_len, hidden_dim, num_layers, num_heads, lr, dropout, head_dropout, weight_decay, epochs=80, patience=12, scheduler_patience=4, batch_size=128):
+    summary_path = EXP / f"{tag}_summary.json"
+    cmd = [
+        "uv", "run", "python", "scripts/train_lstm.py",
+        "--pollutants", pollutant,
+        "--horizons", "168",
+        "--seq-len-map", f"168:{seq_len}",
+        "--device", "cuda",
+        "--batch-size", str(batch_size),
+        "--epochs", str(epochs),
+        "--patience", str(patience),
+        "--lr", str(lr),
+        "--hidden-dim", str(hidden_dim),
+        "--num-layers", str(num_layers),
+        "--num-heads", str(num_heads),
+        "--dropout", str(dropout),
+        "--head-dropout", str(head_dropout),
+        "--weight-decay", str(weight_decay),
+        "--scheduler-factor", "0.5",
+        "--scheduler-patience", str(scheduler_patience),
+        "--max-grad-norm", "1.0",
+        "--min-attn-window", "24",
+        "--summary-path", str(summary_path),
+    ]
+    print("$", " ".join(cmd))
+    subprocess.run(cmd, cwd=ROOT, check=True)
+    return summary_path
 
-summary = json.loads(summary_path.read_text())
-print("summary horizons:", summary.get("horizons"))
-print("seq_len_by_horizon:", summary.get("seq_len_by_horizon"))
-print("model_hparams:", summary.get("model_hparams"))
-print("optimizer_hparams:", summary.get("optimizer_hparams"))
-
-for pollutant in ["pm25", "pm10", "no2", "o3"]:
-    for h in [1, 24, 168]:
-        ckpt = MODELS / f"lstm_quantile_{pollutant}_h{h}.pt"
-        pred = MODELS / f"lstm_predictions_{pollutant}_h{h}.npz"
-        if not ckpt.exists() or not pred.exists():
-            raise RuntimeError(f"Missing artifacts for {pollutant} h{h}")
-
-print("All expected LSTM checkpoints/predictions are present.")
-```
-
-## 6) Evaluate (calibrated + fair intersection)
-
-```python
-# %% [code]
-import os
-import json
-import pathlib
-import subprocess
-
-ROOT = pathlib.Path("ML-Final").resolve()
-env = os.environ.copy()
-env["MPLBACKEND"] = "Agg"
-
-subprocess.run(
-    [
+def run_eval(tag):
+    cmd = [
         "uv", "run", "python", "scripts/evaluate.py",
         "--pollutants", "pm25,pm10,no2,o3",
         "--horizons", "1,24,168",
         "--device", "cuda",
         "--fair-intersection",
         "--calibrate-quantiles",
-    ],
-    cwd=ROOT,
-    env=env,
-    check=True,
-)
+    ]
+    print("$", " ".join(cmd))
+    subprocess.run(cmd, cwd=ROOT, check=True)
 
-summary = json.loads((ROOT / "models" / "evaluation_summary.json").read_text())
-fair = json.loads((ROOT / "models" / "fair_benchmark_summary.json").read_text())
+    fair_src = MODELS / "fair_benchmark_summary.json"
+    eval_src = MODELS / "evaluation_summary.json"
+    fair_dst = EXP / f"{tag}_fair_benchmark_summary.json"
+    eval_dst = EXP / f"{tag}_evaluation_summary.json"
+    fair_dst.write_text(fair_src.read_text())
+    eval_dst.write_text(eval_src.read_text())
+    return fair_dst, eval_dst
 
-print("fair rows:", len(fair.get("rows", [])))
-print("calibration enabled:", summary.get("quantile_calibration_enabled"))
-print("interval focus:", summary.get("interval_focus"))
-print("has split representativeness:", "split_representativeness" in summary)
-print("has phase1 context:", "phase1_data_quality_context" in summary)
+def print_h168_rows(fair_path):
+    fair = json.loads(pathlib.Path(fair_path).read_text())
+    rows = [r for r in fair.get("rows", []) if int(r["horizon"]) == 168]
+    rows = sorted(rows, key=lambda r: r["pollutant"])
+    print("pollutant,lstm_rmse,xgb_rmse,rmse_impr_pct,lstm_crps,xgb_crps,crps_impr_pct,lstm_cov95,xgb_cov95")
+    for r in rows:
+        print(
+            f"{r['pollutant']},{r['lstm_rmse']:.6f},{r['xgb_rmse']:.6f},{r['rmse_improvement_pct']:.2f},"
+            f"{r['lstm_crps']:.6f},{r['xgb_crps']:.6f},{r['crps_improvement_pct']:.2f},"
+            f"{r['lstm_coverage']:.6f},{r['xgb_coverage']:.6f}"
+        )
 ```
 
-## 7) Print compact LSTM vs XGB table from fair benchmark
+## 5) Baseline eval snapshot before targeted h168 runs
+
+```python
+# %% [code]
+fair_path, eval_path = run_eval("baseline_before_h168_tuning")
+print_h168_rows(fair_path)
+print("saved:", fair_path)
+```
+
+## 6) One-shot h1+h24 run using best h168 profile
+
+Use the current best long-horizon profile (`64/2/2`, soft regularization) once on
+`h1,h24` to refresh short/mid-horizon checkpoints under the new single-latency
+feature contract.
+
+```python
+# %% [code]
+import subprocess
+cmd = [
+    "uv", "run", "python", "scripts/train_lstm.py",
+    "--pollutants", "pm25,pm10,no2,o3",
+    "--horizons", "1,24",
+    "--seq-len-map", "1:24,24:24",
+    "--device", "cuda",
+    "--batch-size", "128",
+    "--epochs", "80",
+    "--patience", "12",
+    "--lr", "1.5e-4",
+    "--hidden-dim", "64",
+    "--num-layers", "2",
+    "--num-heads", "2",
+    "--dropout", "0.25",
+    "--head-dropout", "0.20",
+    "--weight-decay", "1e-4",
+    "--scheduler-factor", "0.5",
+    "--scheduler-patience", "4",
+    "--max-grad-norm", "1.0",
+    "--min-attn-window", "24",
+    "--summary-path", str(EXP / "h1h24_once_from_h168best_summary.json"),
+]
+print("$", " ".join(cmd))
+subprocess.run(cmd, cwd=ROOT, check=True)
+
+fair_path, _ = run_eval("h1h24_once_from_h168best")
+
+fair = json.loads(pathlib.Path(fair_path).read_text())
+rows = [r for r in fair.get("rows", []) if int(r["horizon"]) in {1, 24}]
+rows = sorted(rows, key=lambda r: (int(r["horizon"]), r["pollutant"]))
+print("pollutant,h,lstm_rmse,xgb_rmse,rmse_impr_pct,lstm_crps,xgb_crps,crps_impr_pct,lstm_cov95,xgb_cov95")
+for r in rows:
+    print(
+        f"{r['pollutant']},{r['horizon']},{r['lstm_rmse']:.6f},{r['xgb_rmse']:.6f},{r['rmse_improvement_pct']:.2f},"
+        f"{r['lstm_crps']:.6f},{r['xgb_crps']:.6f},{r['crps_improvement_pct']:.2f},"
+        f"{r['lstm_coverage']:.6f},{r['xgb_coverage']:.6f}"
+    )
+```
+
+## 7) Pollutant-specific h168 sweeps
+
+Suggested starting profiles (edit as needed):
+
+- `pm25`: softer + longer context
+- `pm10`: softer + longer context
+- `no2`: slightly larger capacity, moderate context
+- `o3`: compact/soft baseline first
+
+```python
+# %% [code]
+RUNS = [
+    # pm25
+    {"tag": "h168_pm25_soft336", "pollutant": "pm25", "seq_len": 336, "hidden_dim": 64, "num_layers": 2, "num_heads": 2, "lr": 1.5e-4, "dropout": 0.25, "head_dropout": 0.20, "weight_decay": 1e-4},
+    # pm10
+    {"tag": "h168_pm10_soft336", "pollutant": "pm10", "seq_len": 336, "hidden_dim": 64, "num_layers": 2, "num_heads": 2, "lr": 1.5e-4, "dropout": 0.25, "head_dropout": 0.20, "weight_decay": 1e-4},
+    # no2
+    {"tag": "h168_no2_soft336_hd96", "pollutant": "no2", "seq_len": 336, "hidden_dim": 96, "num_layers": 2, "num_heads": 4, "lr": 1.5e-4, "dropout": 0.25, "head_dropout": 0.20, "weight_decay": 1e-4},
+    # no2 (regularized large compare)
+    {"tag": "h168_no2_reg336_hd96", "pollutant": "no2", "seq_len": 336, "hidden_dim": 96, "num_layers": 2, "num_heads": 4, "lr": 2.0e-4, "dropout": 0.30, "head_dropout": 0.25, "weight_decay": 2e-4, "epochs": 60, "patience": 10, "scheduler_patience": 3},
+    # o3
+    {"tag": "h168_o3_soft168", "pollutant": "o3", "seq_len": 168, "hidden_dim": 64, "num_layers": 2, "num_heads": 2, "lr": 1.5e-4, "dropout": 0.25, "head_dropout": 0.20, "weight_decay": 1e-4},
+    # o3 (larger context)
+    {"tag": "h168_o3_soft336_hd96", "pollutant": "o3", "seq_len": 336, "hidden_dim": 96, "num_layers": 2, "num_heads": 4, "lr": 1.5e-4, "dropout": 0.25, "head_dropout": 0.20, "weight_decay": 1e-4},
+]
+
+for cfg in RUNS:
+    print("\n===", cfg["tag"], "===")
+    run_train(**cfg)
+    fair_path, _ = run_eval(cfg["tag"])
+    print_h168_rows(fair_path)
+```
+
+## 8) Compare all h168 sweep outputs saved in `models/experiments`
 
 ```python
 # %% [code]
@@ -197,85 +260,40 @@ import json
 import pathlib
 
 ROOT = pathlib.Path("ML-Final").resolve()
-fair_path = ROOT / "models" / "fair_benchmark_summary.json"
-fair = json.loads(fair_path.read_text())
+EXP = ROOT / "models" / "experiments"
 
-rows = fair.get("rows", [])
-rows = sorted(rows, key=lambda r: (r["pollutant"], int(r["horizon"])))
+def score_row(r):
+    return 0.65 * float(r["rmse_improvement_pct"]) + 0.35 * float(r["crps_improvement_pct"]) - 10.0 * abs(float(r["lstm_coverage"]) - 0.90)
 
-print("pollutant,h,n_common,lstm_rmse,xgb_rmse,rmse_impr_pct,lstm_crps,xgb_crps,crps_impr_pct,lstm_cov95,xgb_cov95")
-for r in rows:
-    print(
-        f"{r['pollutant']},{r['horizon']},{r['n_common']},"
-        f"{r['lstm_rmse']:.6f},{r['xgb_rmse']:.6f},{r['rmse_improvement_pct']:.2f},"
-        f"{r['lstm_crps']:.6f},{r['xgb_crps']:.6f},{r['crps_improvement_pct']:.2f},"
-        f"{r['lstm_coverage']:.6f},{r['xgb_coverage']:.6f}"
-    )
+by_pollutant = {p: [] for p in ["pm25", "pm10", "no2", "o3"]}
+for fp in sorted(EXP.glob("*_fair_benchmark_summary.json")):
+    tag = fp.name.replace("_fair_benchmark_summary.json", "")
+    fair = json.loads(fp.read_text())
+    for r in fair.get("rows", []):
+        if int(r["horizon"]) != 168:
+            continue
+        p = r["pollutant"]
+        if p not in by_pollutant:
+            continue
+        by_pollutant[p].append((score_row(r), tag, r))
+
+for p in ["pm25", "pm10", "no2", "o3"]:
+    print("\n===", p, "h168 ranking ===")
+    rows = sorted(by_pollutant[p], key=lambda t: t[0], reverse=True)
+    for s, tag, r in rows[:8]:
+        print(
+            f"{tag}: score={s:+.3f} rmse_impr={float(r['rmse_improvement_pct']):+.2f}% "
+            f"crps_impr={float(r['crps_improvement_pct']):+.2f}% cov={float(r['lstm_coverage']):.3f}"
+        )
 ```
 
-## 8) Predict (single region + selected horizon)
+## 9) Final h168 report snapshot
 
 ```python
 # %% [code]
-import pathlib
-import subprocess
-import time
-
-ROOT = pathlib.Path("ML-Final").resolve()
-
-subprocess.run(
-    [
-        "uv", "run", "python", "scripts/predict.py",
-        "--region", "AIIMS",
-        "--horizon", "24",
-        "--pollutants", "pm25,pm10,no2,o3",
-        "--device", "cuda",
-        "--output", "models/prediction_output.json",
-    ],
-    cwd=ROOT,
-    check=True,
-)
-
-print("saved:", ROOT / "models" / "prediction_output.json")
+fair_path, eval_path = run_eval("final_h168_snapshot")
+print_h168_rows(fair_path)
+print("saved:", fair_path)
+print("saved:", eval_path)
 print("elapsed hours:", (time.time() - PIPELINE_START_TS) / 3600.0)
 ```
-
-## 9) Optional second-pass targeted retry (if only a few cells are weak)
-
-Use this only if one or two pollutant/horizon cells remain far behind XGB.
-
-```python
-# %% [code]
-import pathlib
-import subprocess
-
-ROOT = pathlib.Path("ML-Final").resolve()
-
-subprocess.run(
-    [
-        "uv", "run", "python", "scripts/train_lstm.py",
-        "--pollutants", "pm10,no2,o3",
-        "--horizons", "168",
-        "--seq-len-map", "168:168",
-        "--device", "cuda",
-        "--batch-size", "128",
-        "--epochs", "40",
-        "--patience", "6",
-        "--lr", "2e-4",
-        "--hidden-dim", "64",
-        "--num-layers", "2",
-        "--num-heads", "2",
-        "--dropout", "0.40",
-        "--head-dropout", "0.35",
-        "--weight-decay", "8e-4",
-        "--scheduler-factor", "0.5",
-        "--scheduler-patience", "2",
-        "--max-grad-norm", "1.0",
-        "--min-attn-window", "24",
-    ],
-    cwd=ROOT,
-    check=True,
-)
-```
-
-Re-run sections 6 and 7 after this optional retry.
