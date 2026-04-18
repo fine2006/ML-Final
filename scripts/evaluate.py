@@ -606,12 +606,31 @@ def evaluate_lstm_models(
             )
             infer_loader = DataLoader(infer_ds, batch_size=batch_size, shuffle=False)
 
+            model_hparams = checkpoint.get("model_hparams", {})
+            hidden_dim = int(model_hparams.get("hidden_dim", 128))
+            num_layers = int(model_hparams.get("num_layers", 2))
+            num_heads = int(model_hparams.get("num_heads", 4))
+            dropout = float(model_hparams.get("dropout", 0.3))
+            head_dropout = float(model_hparams.get("head_dropout", 0.2))
+
+            embed_dim = hidden_dim * 2
+            if num_heads <= 0 or (embed_dim % num_heads) != 0:
+                logger.warning(
+                    "[LSTM %s h%d] invalid model_hparams hidden_dim=%d num_heads=%d; skipping",
+                    pollutant,
+                    horizon,
+                    hidden_dim,
+                    num_heads,
+                )
+                continue
+
             model = HierarchicalQuantileLSTM(
                 input_dim=len(feature_cols),
-                hidden_dim=128,
-                num_layers=2,
-                num_heads=4,
-                dropout=0.3,
+                hidden_dim=hidden_dim,
+                num_layers=num_layers,
+                num_heads=num_heads,
+                dropout=dropout,
+                head_dropout=head_dropout,
                 horizons=checkpoint_horizons,
                 quantiles=quantiles,
                 min_attn_window=int(checkpoint.get("min_attn_window", 2)),

@@ -177,6 +177,7 @@ class HierarchicalQuantileLSTM(nn.Module):
         num_layers: int = 2,
         num_heads: int = 4,
         dropout: float = 0.3,
+        head_dropout: float = 0.2,
         horizons: list[int] | None = None,
         quantiles: list[float] | None = None,
         min_attn_window: int = 2,
@@ -213,7 +214,7 @@ class HierarchicalQuantileLSTM(nn.Module):
                 str(h): nn.Sequential(
                     nn.Linear(embed_dim, 128),
                     nn.ReLU(),
-                    nn.Dropout(0.2),
+                    nn.Dropout(head_dropout),
                     nn.Linear(128, 32),
                     nn.ReLU(),
                     nn.Linear(32, len(self.quantiles)),
@@ -303,6 +304,7 @@ def run_epoch(
     horizon_weights: torch.Tensor | None,
     quantiles: list[float],
     horizons: list[int],
+    max_grad_norm: float,
 ) -> tuple[float, dict[str, float]]:
     model.train(mode=train_mode)
     total = 0.0
@@ -330,7 +332,11 @@ def run_epoch(
 
         if train_mode:
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    max_norm=max_grad_norm,
+                )
             optimizer.step()
 
         total += float(loss.item())
@@ -558,6 +564,15 @@ def train_for_pollutant(
     batch_size: int,
     patience: int,
     lr: float,
+    hidden_dim: int,
+    num_layers: int,
+    num_heads: int,
+    dropout: float,
+    head_dropout: float,
+    weight_decay: float,
+    scheduler_factor: float,
+    scheduler_patience: int,
+    max_grad_norm: float,
     device: torch.device,
     max_train_samples: int | None,
     max_val_samples: int | None,
@@ -646,6 +661,47 @@ def train_for_pollutant(
         {f"h{h}": float(w) for h, w in zip(horizons, horizon_loss_weights)},
     )
 
+    if hidden_dim <= 0:
+        raise ValueError(f"hidden_dim must be > 0, got {hidden_dim}")
+    if num_layers <= 0:
+        raise ValueError(f"num_layers must be > 0, got {num_layers}")
+    if num_heads <= 0:
+        raise ValueError(f"num_heads must be > 0, got {num_heads}")
+    if not (0.0 <= dropout < 1.0):
+        raise ValueError(f"dropout must be in [0,1), got {dropout}")
+    if not (0.0 <= head_dropout < 1.0):
+        raise ValueError(f"head_dropout must be in [0,1), got {head_dropout}")
+
+    embed_dim = hidden_dim * 2
+    if embed_dim % num_heads != 0:
+        raise ValueError(
+            f"Invalid attention shape for pollutant={pollutant} h{horizon}: "
+            f"embed_dim={embed_dim} is not divisible by num_heads={num_heads}"
+        )
+
+    logger.info(
+        "[%s h%d] model_hparams hidden_dim=%d num_layers=%d num_heads=%d "
+        "dropout=%.3f head_dropout=%.3f",
+        pollutant,
+        horizon,
+        hidden_dim,
+        num_layers,
+        num_heads,
+        dropout,
+        head_dropout,
+    )
+    logger.info(
+        "[%s h%d] optim_hparams lr=%.6g weight_decay=%.6g "
+        "scheduler_factor=%.3f scheduler_patience=%d max_grad_norm=%.3f",
+        pollutant,
+        horizon,
+        lr,
+        weight_decay,
+        scheduler_factor,
+        scheduler_patience,
+        max_grad_norm,
+    )
+
     train_sampler = make_stratified_sampler(train_ds)
     train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=train_sampler)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
@@ -659,21 +715,22 @@ def train_for_pollutant(
 
     model = HierarchicalQuantileLSTM(
         input_dim=len(feature_cols),
-        hidden_dim=128,
-        num_layers=2,
-        num_heads=4,
-        dropout=0.3,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        dropout=dropout,
+        head_dropout=head_dropout,
         horizons=horizons,
         quantiles=QUANTILES,
         min_attn_window=min_attn_window,
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="min",
-        factor=0.5,
-        patience=5,
+        factor=scheduler_factor,
+        patience=scheduler_patience,
     )
 
     history: dict[str, list[float] | list[dict[str, float]]] = {
@@ -697,6 +754,7 @@ def train_for_pollutant(
             horizon_weights=horizon_weights_tensor,
             quantiles=QUANTILES,
             horizons=horizons,
+            max_grad_norm=max_grad_norm,
         )
         val_loss, val_h_losses = run_epoch(
             model,
@@ -707,6 +765,7 @@ def train_for_pollutant(
             horizon_weights=horizon_weights_tensor,
             quantiles=QUANTILES,
             horizons=horizons,
+            max_grad_norm=max_grad_norm,
         )
         scheduler.step(val_loss)
 
@@ -801,6 +860,20 @@ def train_for_pollutant(
             "quantiles": QUANTILES,
             "min_attn_window": int(min_attn_window),
             "horizon_loss_weights": [float(x) for x in horizon_loss_weights],
+            "model_hparams": {
+                "hidden_dim": int(hidden_dim),
+                "num_layers": int(num_layers),
+                "num_heads": int(num_heads),
+                "dropout": float(dropout),
+                "head_dropout": float(head_dropout),
+            },
+            "optimizer_hparams": {
+                "lr": float(lr),
+                "weight_decay": float(weight_decay),
+                "scheduler_factor": float(scheduler_factor),
+                "scheduler_patience": int(scheduler_patience),
+                "max_grad_norm": float(max_grad_norm),
+            },
             "region_weights": region_weights,
             "best_epoch": best_epoch,
             "best_val_loss": best_val,
@@ -827,6 +900,20 @@ def train_for_pollutant(
         "best_val_loss": float(best_val),
         "min_attn_window": int(min_attn_window),
         "horizon_loss_weights": [float(x) for x in horizon_loss_weights],
+        "model_hparams": {
+            "hidden_dim": int(hidden_dim),
+            "num_layers": int(num_layers),
+            "num_heads": int(num_heads),
+            "dropout": float(dropout),
+            "head_dropout": float(head_dropout),
+        },
+        "optimizer_hparams": {
+            "lr": float(lr),
+            "weight_decay": float(weight_decay),
+            "scheduler_factor": float(scheduler_factor),
+            "scheduler_patience": int(scheduler_patience),
+            "max_grad_norm": float(max_grad_norm),
+        },
         "history": history,
         "val_metrics": val_metrics,
         "test_metrics": test_metrics,
@@ -871,6 +958,60 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=128,
+        help="LSTM hidden dimension per direction (BiLSTM embed=2*hidden)",
+    )
+    parser.add_argument(
+        "--num-layers",
+        type=int,
+        default=2,
+        help="Number of stacked LSTM layers",
+    )
+    parser.add_argument(
+        "--num-heads",
+        type=int,
+        default=4,
+        help="Attention heads per horizon (must divide 2*hidden_dim)",
+    )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=0.3,
+        help="Dropout for LSTM inter-layer and attention",
+    )
+    parser.add_argument(
+        "--head-dropout",
+        type=float,
+        default=0.2,
+        help="Dropout inside quantile MLP head",
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=1e-4,
+        help="Adam weight decay (L2)",
+    )
+    parser.add_argument(
+        "--scheduler-factor",
+        type=float,
+        default=0.5,
+        help="ReduceLROnPlateau factor",
+    )
+    parser.add_argument(
+        "--scheduler-patience",
+        type=int,
+        default=5,
+        help="ReduceLROnPlateau patience in epochs",
+    )
+    parser.add_argument(
+        "--max-grad-norm",
+        type=float,
+        default=1.0,
+        help="Gradient clipping max norm (<=0 disables clipping)",
+    )
     parser.add_argument(
         "--min-attn-window",
         type=int,
@@ -939,6 +1080,20 @@ def main() -> None:
         "seq_len_by_horizon": {f"h{h}": int(seq_len_by_horizon[h]) for h in horizons},
         "quantiles": QUANTILES,
         "min_attn_window": int(args.min_attn_window),
+        "model_hparams": {
+            "hidden_dim": int(args.hidden_dim),
+            "num_layers": int(args.num_layers),
+            "num_heads": int(args.num_heads),
+            "dropout": float(args.dropout),
+            "head_dropout": float(args.head_dropout),
+        },
+        "optimizer_hparams": {
+            "lr": float(args.lr),
+            "weight_decay": float(args.weight_decay),
+            "scheduler_factor": float(args.scheduler_factor),
+            "scheduler_patience": int(args.scheduler_patience),
+            "max_grad_norm": float(args.max_grad_norm),
+        },
         "pollutants": {},
     }
 
@@ -963,6 +1118,15 @@ def main() -> None:
                 batch_size=args.batch_size,
                 patience=args.patience,
                 lr=args.lr,
+                hidden_dim=args.hidden_dim,
+                num_layers=args.num_layers,
+                num_heads=args.num_heads,
+                dropout=args.dropout,
+                head_dropout=args.head_dropout,
+                weight_decay=args.weight_decay,
+                scheduler_factor=args.scheduler_factor,
+                scheduler_patience=args.scheduler_patience,
+                max_grad_norm=args.max_grad_norm,
                 device=device,
                 max_train_samples=args.max_train_samples,
                 max_val_samples=args.max_val_samples,

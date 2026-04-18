@@ -280,12 +280,27 @@ def main() -> None:
         xb_arr = np.ascontiguousarray(window.to_numpy(dtype=np.float32))
         xb = torch.from_numpy(xb_arr).unsqueeze(0).to(device)
 
+        model_hparams = checkpoint.get("model_hparams", {})
+        hidden_dim = int(model_hparams.get("hidden_dim", 128))
+        num_layers = int(model_hparams.get("num_layers", 2))
+        num_heads = int(model_hparams.get("num_heads", 4))
+        dropout = float(model_hparams.get("dropout", 0.3))
+        head_dropout = float(model_hparams.get("head_dropout", 0.2))
+
+        embed_dim = hidden_dim * 2
+        if num_heads <= 0 or (embed_dim % num_heads) != 0:
+            raise ValueError(
+                f"Invalid model_hparams in checkpoint for {pollutant}: "
+                f"hidden_dim={hidden_dim}, num_heads={num_heads}"
+            )
+
         model = HierarchicalQuantileLSTM(
             input_dim=len(feature_cols),
-            hidden_dim=128,
-            num_layers=2,
-            num_heads=4,
-            dropout=0.3,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            dropout=dropout,
+            head_dropout=head_dropout,
             horizons=model_horizons,
             quantiles=[
                 float(q) for q in checkpoint.get("quantiles", [0.05, 0.50, 0.95, 0.99])

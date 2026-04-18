@@ -471,6 +471,46 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 | | Metadata now stores per-pollutant cap policy and removed-row stats |
 | **Status** | ✓ APPROVED (implemented) |
 
+### Decision 4.19: Configurable LSTM Regularization + Capacity Sweep Controls
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Keep hardcoded LSTM architecture/regularization in code |
+| | (B) Expose architecture + optimizer/scheduler regularization knobs via CLI |
+| **Chosen** | (B) Expose knobs via CLI |
+| **Rationale** | - Current long-horizon runs (`h24`,`h168`) peak early and then drift, requiring rapid controlled sweeps |
+| | - Hardcoded `hidden_dim/layers/heads/dropout/weight_decay` slows experimentation and increases edit risk between runs |
+| | - Run-level hyperparameter control improves reproducibility and clear audit trail in saved checkpoints/summaries |
+| **Implementation** | `train_lstm.py` now supports CLI args: `--hidden-dim`, `--num-layers`, `--num-heads`, `--dropout`, `--head-dropout`, `--weight-decay`, `--scheduler-factor`, `--scheduler-patience`, `--max-grad-norm` |
+| | Model + optimizer hyperparameters are persisted in checkpoint (`model_hparams`, `optimizer_hparams`) and training summary |
+| **Status** | ✓ APPROVED (implemented) |
+
+### Decision 4.20: Checkpoint-Driven LSTM Architecture Loading in Evaluation/Inference
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Assume fixed model shape (`hidden=128`, `layers=2`, `heads=4`) in evaluate/predict |
+| | (B) Rebuild architecture from checkpoint metadata |
+| **Chosen** | (B) Load architecture from checkpoint metadata |
+| **Rationale** | - Capacity sweeps are invalid unless evaluation/inference can reconstruct the exact trained model shape |
+| | - Fixed-shape loaders fail on any architecture change and block fair comparisons |
+| **Implementation** | `evaluate.py` and `predict.py` now read `model_hparams` from checkpoint with backward-compatible defaults for legacy models |
+| | Added divisibility guard (`2*hidden_dim % num_heads == 0`) before model instantiation |
+| **Status** | ✓ APPROVED (implemented) |
+
+### Decision 4.21: Aggressive Recovery Run Profile for Horizon-Separated LSTM (Current Sweep)
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Keep prior long-context profile (`h1=168,h24=336,h168=720`) |
+| | (B) Increase sample density with `seq_len=max(24,h)` and tighter regularization/capacity |
+| **Chosen** | (B) for current recovery sweep |
+| **Rationale** | - Long-horizon checkpoints underperform XGB and show early-epoch peaks, suggesting overfitting/optimization instability |
+| | - `seq_len=max(24,h)` materially increases val/test sequences for `h24/h168` while preserving minimum temporal context |
+| | - Reduced capacity + stronger regularization enables faster iterative search near observed effective epoch range (~<=25) |
+| **Implementation** | Notebook run profile uses: `--seq-len-map 1:24,24:24,168:168`, `--hidden-dim 64`, `--num-layers 2`, `--num-heads 2`, `--dropout 0.35`, `--head-dropout 0.30`, `--weight-decay 5e-4`, `--lr 3e-4`, `--epochs 40`, `--patience 6`, `--scheduler-patience 2` |
+| **Status** | ✓ APPROVED (run-profile; non-default) |
+
 ---
 
 ## 5. Evaluation Framework
