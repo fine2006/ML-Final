@@ -1,25 +1,3 @@
-# Notebook Run Script (Corrected Order: Lock Best -> Eval Once -> h168 Sweep)
-
-This runbook follows your required sequence exactly:
-
-1. Train LSTM on all three horizons (`1,24,168`) using the best config already found.
-2. Run evaluation once.
-3. Run h168-only sweep.
-4. Produce h168-only leaderboard.
-
-It also uses `MPLBACKEND=agg` (lowercase) as requested.
-
-Best config reused from prior sweep (`h168_05_64_soft_336`):
-
-- `hidden_dim=64`, `num_layers=2`, `num_heads=2`
-- `lr=1.5e-4`, `dropout=0.25`, `head_dropout=0.20`, `weight_decay=1e-4`
-- `batch_size=128`, `epochs=80`, `patience=12`, `scheduler_patience=4`
-- `min_attn_window=24`
-- seq map here: `1:24,24:24,168:336`
-
-All cells below are copy-paste notebook blocks.
-
-```python
 # %% [code]
 import json
 import os
@@ -39,9 +17,8 @@ def run_cmd(cmd, cwd=None, env=None):
     else:
         print("$", cmd)
     subprocess.run(cmd, cwd=cwd, env=env, check=True)
-```
 
-```python
+
 # %% [code]
 # Clean clone + sync
 if ROOT.exists():
@@ -58,9 +35,8 @@ if dst_dataset.exists():
     shutil.rmtree(dst_dataset)
 shutil.copytree(src_dataset, dst_dataset)
 print("Copied dataset:", dst_dataset)
-```
 
-```python
+
 # %% [code]
 # Quick environment check
 run_cmd(
@@ -80,9 +56,8 @@ run_cmd(
     ],
     cwd=ROOT,
 )
-```
 
-```python
+
 # %% [code]
 # Phase 1 + preprocessing
 run_cmd(["uv", "run", "python", "scripts/data_investigation.py"], cwd=ROOT)
@@ -91,9 +66,8 @@ env = os.environ.copy()
 env["MPLBACKEND"] = "agg"
 run_cmd(["uv", "run", "python", "scripts/preprocess_lstm.py"], cwd=ROOT, env=env)
 run_cmd(["uv", "run", "python", "scripts/preprocess_xgb.py"], cwd=ROOT, env=env)
-```
 
-```python
+
 # %% [code]
 # Metadata checks for single-latency contract
 repo = ROOT.resolve()
@@ -107,9 +81,8 @@ print("XGB leakage policy:", xgb_meta["leakage_policy"])
 assert "temperature" in lstm_meta["feature_columns"]
 assert "temperature_lag_1" not in lstm_meta["feature_columns"]
 assert xgb_meta["leakage_policy"]["weather_current_values_shifted_by"] == 0
-```
 
-```python
+
 # %% [code]
 # Keep XGB frozen by default (use precomputed models)
 TRAIN_XGB = False
@@ -131,9 +104,8 @@ if TRAIN_XGB:
     )
 else:
     print("Skipping XGB retrain (TRAIN_XGB=False); expecting precomputed XGB models in models/.")
-```
 
-```python
+
 # %% [code]
 # Verify expected XGB files
 models_dir = repo / "models"
@@ -153,9 +125,8 @@ print("xgb model count:", len(present))
 if missing:
     print("missing examples:", missing[:10])
     raise RuntimeError(f"Missing {len(missing)} expected XGB files in {models_dir}")
-```
 
-```python
+
 # %% [code]
 # Helpers
 EXP = models_dir / "experiments"
@@ -349,25 +320,22 @@ def score_row(r):
 
 
 print("Helper setup complete.")
-```
 
-```python
+
 # %% [code]
 # 1) Train LSTM on all three horizons using the previously found best config
 train_lock_best_all3()
 assert_lstm_checkpoints(horizons=[1, 24, 168])
-```
 
-```python
+
 # %% [code]
 # 2) Eval once after lock-train (all three horizons)
 fair_path, eval_path = run_eval("baseline_after_lock_all3", horizons="1,24,168")
 print_rows(fair_path, horizons=[1, 24, 168])
 print("saved:", fair_path)
 print("saved:", eval_path)
-```
 
-```python
+
 # %% [code]
 # 3) h168-only sweep
 RUNS = [
@@ -454,9 +422,8 @@ for cfg in RUNS:
     assert_lstm_checkpoints(horizons=[168], pollutants=[cfg["pollutant"]])
     fair_path, _ = run_eval(cfg["tag"], horizons="168")
     print_rows(fair_path, horizons=[168])
-```
 
-```python
+
 # %% [code]
 # 4) Leaderboard only on h168
 allowed_tags = {"baseline_after_lock_all3"} | {cfg["tag"] for cfg in RUNS}
@@ -494,9 +461,8 @@ for s, tag, p, r in sorted(global_rows, key=lambda t: t[0], reverse=True)[:20]:
         f"{tag} [{p}]: score={s:+.3f} rmse_impr={float(r['rmse_improvement_pct']):+.2f}% "
         f"crps_impr={float(r['crps_improvement_pct']):+.2f}% cov={float(r['lstm_coverage']):.3f}"
     )
-```
 
-```python
+
 # %% [code]
 # Final h168 snapshot
 fair_path, eval_path = run_eval("final_h168_snapshot", horizons="168")
@@ -504,4 +470,3 @@ print_rows(fair_path, horizons=[168])
 print("saved:", fair_path)
 print("saved:", eval_path)
 print("elapsed hours:", (time.time() - PIPELINE_START_TS) / 3600.0)
-```

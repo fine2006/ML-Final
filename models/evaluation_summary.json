@@ -1,11 +1,9 @@
 {
-  "created_at": "2026-04-17T19:45:52.392753",
+  "created_at": "2026-04-18T21:30:16.495149",
   "pollutants_requested": [
     "pm25"
   ],
   "horizons_requested": [
-    1,
-    24,
     168
   ],
   "target_quantiles": [
@@ -20,19 +18,13 @@
     "pollutants": {
       "pm25": {
         "model_paths": {
-          "h1": "/var/home/fine/AI-slop/ML-Final/models/lstm_quantile_pm25_h1.pt",
-          "h24": "/var/home/fine/AI-slop/ML-Final/models/lstm_quantile_pm25_h24.pt",
           "h168": "/var/home/fine/AI-slop/ML-Final/models/lstm_quantile_pm25_h168.pt"
         },
-        "sample_count_total": 46929,
+        "sample_count_total": 14395,
         "sample_count_by_horizon": {
-          "h1": 16603,
-          "h24": 15931,
           "h168": 14395
         },
         "horizons": [
-          1,
-          24,
           168
         ],
         "quantiles": [
@@ -41,131 +33,33 @@
           0.95,
           0.99
         ],
-        "overall_rmse_p50": 21.476680755615234,
-        "overall_mae_p50": 17.533315658569336,
-        "overall_crps_approx": 56.101287841796875,
+        "overall_rmse_p50": 21.408594131469727,
+        "overall_mae_p50": 17.088537216186523,
+        "overall_crps_approx": 56.719173431396484,
         "by_horizon": {
-          "h1": {
-            "rmse": 21.6192329963753,
-            "mae": 17.941268920898438,
-            "r2": -0.20145022869110107,
-            "crps_approx": 56.695770263671875,
-            "coverage_p05_p95": 0.6355477925676083,
-            "tail_below_p05": 0.3536107932301391,
-            "tail_above_p95": 0.010841414202252604,
-            "tail_above_p99": 0.0007829910257182436,
-            "interval_width_p05_p95": 84.10557556152344,
-            "quantile_crossing_rate": 0.0,
-            "pit_ks_stat": 0.3557005375623703,
-            "pit_pvalue": 0.0,
-            "by_region": {
-              "AIIMS": {
-                "rmse": 22.8826564628514,
-                "mae": 19.238285064697266,
-                "crps_approx": 56.93985366821289,
-                "coverage_p05_p95": 0.5943990665110852,
-                "count": 4285
-              },
-              "Bhatagaon": {
-                "rmse": 21.516095191621595,
-                "mae": 18.727916717529297,
-                "crps_approx": 58.25638961791992,
-                "coverage_p05_p95": 0.5064073226544622,
-                "count": 4370
-              },
-              "IGKV": {
-                "rmse": 19.15419719705506,
-                "mae": 17.2203311920166,
-                "crps_approx": 57.0700569152832,
-                "coverage_p05_p95": 0.6244596999745741,
-                "count": 3933
-              },
-              "SILTARA": {
-                "rmse": 22.598295353430075,
-                "mae": 16.40703582763672,
-                "crps_approx": 54.37001037597656,
-                "coverage_p05_p95": 0.8308841843088418,
-                "count": 4015
-              }
-            },
-            "fairness": {
-              "rmse_max_min_ratio": 1.1946549483352709,
-              "rmse_max": 22.8826564628514,
-              "rmse_min": 19.15419719705506
-            }
-          },
-          "h24": {
-            "rmse": 21.388870111542534,
-            "mae": 17.510051727294922,
-            "r2": -0.15161168575286865,
-            "crps_approx": 54.92341613769531,
-            "coverage_p05_p95": 0.6476052978469651,
-            "tail_below_p05": 0.33871068984997804,
-            "tail_above_p95": 0.013684012303056933,
-            "tail_above_p99": 0.0009415604795681376,
-            "interval_width_p05_p95": 79.44015502929688,
-            "quantile_crossing_rate": 0.0,
-            "pit_ks_stat": 0.3387106955051422,
-            "pit_pvalue": 0.0,
-            "by_region": {
-              "AIIMS": {
-                "rmse": 22.60342980749824,
-                "mae": 18.7086238861084,
-                "crps_approx": 54.97800064086914,
-                "coverage_p05_p95": 0.6167111974738888,
-                "count": 4117
-              },
-              "Bhatagaon": {
-                "rmse": 21.05418526186695,
-                "mae": 18.133258819580078,
-                "crps_approx": 56.40019226074219,
-                "coverage_p05_p95": 0.5259400285578296,
-                "count": 4202
-              },
-              "IGKV": {
-                "rmse": 18.735420764181878,
-                "mae": 16.706928253173828,
-                "crps_approx": 55.268165588378906,
-                "coverage_p05_p95": 0.6371845949535192,
-                "count": 3765
-              },
-              "SILTARA": {
-                "rmse": 22.803875188941298,
-                "mae": 16.3326416015625,
-                "crps_approx": 52.91455078125,
-                "coverage_p05_p95": 0.8237587730699246,
-                "count": 3847
-              }
-            },
-            "fairness": {
-              "rmse_max_min_ratio": 1.2171530853759867,
-              "rmse_max": 22.803875188941298,
-              "rmse_min": 18.735420764181878
-            }
-          },
           "h168": {
-            "rmse": 21.408592908965243,
-            "mae": 17.08853530883789,
-            "r2": -0.054692625999450684,
+            "rmse": 21.408594334447862,
+            "mae": 17.088537216186523,
+            "r2": -0.054692864418029785,
             "crps_approx": 56.719173431396484,
             "coverage_p05_p95": 0.6956582146578674,
             "tail_below_p05": 0.2907259465092046,
             "tail_above_p95": 0.0136158388329281,
             "tail_above_p99": 0.00048627995831886073,
-            "interval_width_p05_p95": 84.17515563964844,
+            "interval_width_p05_p95": 84.17514038085938,
             "quantile_crossing_rate": 0.0,
             "pit_ks_stat": 0.2907259464263916,
             "pit_pvalue": 0.0,
             "by_region": {
               "AIIMS": {
-                "rmse": 22.65472112298353,
-                "mae": 18.074031829833984,
-                "crps_approx": 56.36788558959961,
+                "rmse": 22.654723817130694,
+                "mae": 18.07403564453125,
+                "crps_approx": 56.367889404296875,
                 "coverage_p05_p95": 0.7013126171979641,
                 "count": 3733
               },
               "Bhatagaon": {
-                "rmse": 20.049480265970658,
+                "rmse": 20.049481788083778,
                 "mae": 17.334684371948242,
                 "crps_approx": 58.289608001708984,
                 "coverage_p05_p95": 0.5654793085385018,
@@ -174,14 +68,14 @@
               "IGKV": {
                 "rmse": 17.946991751807687,
                 "mae": 15.719466209411621,
-                "crps_approx": 56.929996490478516,
+                "crps_approx": 56.93000030517578,
                 "coverage_p05_p95": 0.6915113871635611,
                 "count": 3381
               },
               "SILTARA": {
                 "rmse": 24.37761779813029,
-                "mae": 17.091476440429688,
-                "crps_approx": 55.16059112548828,
+                "mae": 17.09147834777832,
+                "crps_approx": 55.160587310791016,
                 "coverage_p05_p95": 0.8371354317066128,
                 "count": 3463
               }
@@ -194,42 +88,10 @@
           }
         },
         "calibration": {
-          "h1": {
-            "bias_by_quantile": {
-              "q05": 10.180112838745117,
-              "q50": 29.62244415283203,
-              "q95": 94.28567504882812,
-              "q99": 141.62680053710938
-            },
-            "val_empirical_by_quantile": {
-              "q05": 0.05002119392156601,
-              "q50": 0.5000302791595459,
-              "q95": 0.9499788284301758,
-              "q99": 0.9899473190307617
-            },
-            "val_mean_abs_quantile_error": 3.133062273263931e-05,
-            "num_samples": 16513
-          },
-          "h24": {
-            "bias_by_quantile": {
-              "q05": 10.211682319641113,
-              "q50": 29.07329750061035,
-              "q95": 89.61170959472656,
-              "q99": 140.20071411132812
-            },
-            "val_empirical_by_quantile": {
-              "q05": 0.0500599704682827,
-              "q50": 0.500031590461731,
-              "q95": 0.949940025806427,
-              "q99": 0.9899627566337585
-            },
-            "val_mean_abs_quantile_error": 4.719384014606476e-05,
-            "num_samples": 15841
-          },
           "h168": {
             "bias_by_quantile": {
-              "q05": 9.344494819641113,
-              "q50": 27.914228439331055,
+              "q05": 9.344504356384277,
+              "q50": 27.91423225402832,
               "q95": 93.51963806152344,
               "q99": 145.5963134765625
             },
@@ -251,8 +113,6 @@
     "pollutants": {
       "pm25": {
         "horizons": [
-          1,
-          24,
           168
         ],
         "quantiles": [
@@ -262,193 +122,63 @@
           0.99
         ],
         "by_horizon": {
-          "h1": {
-            "rmse": 6.853967016340536,
-            "mae": 2.7966012954711914,
-            "r2": 0.875947892665863,
-            "crps_approx": 10.61725902557373,
-            "coverage_p05_p95": 0.9511724137931035,
-            "tail_below_p05": 0.02797241379310345,
-            "tail_above_p95": 0.020855172413793102,
-            "tail_above_p99": 0.0037517241379310343,
-            "interval_width_p05_p95": 15.948883056640625,
-            "quantile_crossing_rate": 0.0,
-            "pit_ks_stat": 0.22130966186523438,
-            "pit_pvalue": 0.0,
-            "by_region": {
-              "AIIMS": {
-                "rmse": 5.184402460229038,
-                "mae": 2.817507743835449,
-                "crps_approx": 11.45872688293457,
-                "coverage_p05_p95": 0.9467897977132805,
-                "count": 4548
-              },
-              "Bhatagaon": {
-                "rmse": 9.605137928295566,
-                "mae": 3.1704306602478027,
-                "crps_approx": 11.012052536010742,
-                "coverage_p05_p95": 0.9502762430939227,
-                "count": 4525
-              },
-              "IGKV": {
-                "rmse": 3.162449705907593,
-                "mae": 1.8043429851531982,
-                "crps_approx": 8.040990829467773,
-                "coverage_p05_p95": 0.9696028400266252,
-                "count": 4507
-              },
-              "SILTARA": {
-                "rmse": 7.659833046311341,
-                "mae": 3.387457847595215,
-                "crps_approx": 11.936903953552246,
-                "coverage_p05_p95": 0.9381738173817382,
-                "count": 4545
-              }
-            },
-            "fairness": {
-              "rmse_max_min_ratio": 3.0372460660331617,
-              "rmse_max": 9.605137928295566,
-              "rmse_min": 3.162449705907593
-            }
-          },
-          "h24": {
-            "rmse": 13.211814124892278,
-            "mae": 8.452231407165527,
-            "r2": 0.5352526903152466,
-            "crps_approx": 29.065662384033203,
-            "coverage_p05_p95": 0.9569103448275862,
-            "tail_below_p05": 0.026537931034482758,
-            "tail_above_p95": 0.016551724137931035,
-            "tail_above_p99": 0.002703448275862069,
-            "interval_width_p05_p95": 45.09181594848633,
-            "quantile_crossing_rate": 0.0,
-            "pit_ks_stat": 0.22205018997192383,
-            "pit_pvalue": 0.0,
-            "by_region": {
-              "AIIMS": {
-                "rmse": 13.029526264891597,
-                "mae": 8.844120979309082,
-                "crps_approx": 26.63225555419922,
-                "coverage_p05_p95": 0.9478891820580475,
-                "count": 4548
-              },
-              "Bhatagaon": {
-                "rmse": 13.706845899466396,
-                "mae": 7.838648319244385,
-                "crps_approx": 27.932085037231445,
-                "coverage_p05_p95": 0.972817679558011,
-                "count": 4525
-              },
-              "IGKV": {
-                "rmse": 10.22813800889029,
-                "mae": 7.2139668464660645,
-                "crps_approx": 24.21406364440918,
-                "coverage_p05_p95": 0.9587308631018416,
-                "count": 4507
-              },
-              "SILTARA": {
-                "rmse": 15.343537680716606,
-                "mae": 9.898877143859863,
-                "crps_approx": 37.4402961730957,
-                "coverage_p05_p95": 0.9482948294829483,
-                "count": 4545
-              }
-            },
-            "fairness": {
-              "rmse_max_min_ratio": 1.5001300986924515,
-              "rmse_max": 15.343537680716606,
-              "rmse_min": 10.22813800889029
-            }
-          },
           "h168": {
-            "rmse": 17.5804512349655,
-            "mae": 12.495929718017578,
-            "r2": 0.19531065225601196,
-            "crps_approx": 40.13761901855469,
-            "coverage_p05_p95": 0.9303724137931034,
-            "tail_below_p05": 0.05986206896551724,
-            "tail_above_p95": 0.00976551724137931,
-            "tail_above_p99": 0.0014344827586206896,
-            "interval_width_p05_p95": 63.825042724609375,
+            "rmse": 17.48325527720426,
+            "mae": 12.364758491516113,
+            "r2": 0.20418375730514526,
+            "crps_approx": 39.00157165527344,
+            "coverage_p05_p95": 0.9308137931034483,
+            "tail_below_p05": 0.058482758620689655,
+            "tail_above_p95": 0.010703448275862068,
+            "tail_above_p99": 0.0019862068965517243,
+            "interval_width_p05_p95": 63.126991271972656,
             "quantile_crossing_rate": 0.0,
-            "pit_ks_stat": 0.2689003348350525,
+            "pit_ks_stat": 0.2595751881599426,
             "pit_pvalue": 0.0,
             "by_region": {
               "AIIMS": {
-                "rmse": 17.205500162443514,
-                "mae": 12.303199768066406,
-                "crps_approx": 39.67351150512695,
-                "coverage_p05_p95": 0.939094107299912,
+                "rmse": 16.798353859316467,
+                "mae": 11.935441970825195,
+                "crps_approx": 37.600040435791016,
+                "coverage_p05_p95": 0.9375549692172384,
                 "count": 4548
               },
               "Bhatagaon": {
-                "rmse": 15.92511294817432,
-                "mae": 10.935811042785645,
-                "crps_approx": 37.34773635864258,
-                "coverage_p05_p95": 0.9467403314917127,
+                "rmse": 15.928850766554506,
+                "mae": 10.936671257019043,
+                "crps_approx": 37.08185958862305,
+                "coverage_p05_p95": 0.9542541436464088,
                 "count": 4525
               },
               "IGKV": {
-                "rmse": 14.624863322344781,
-                "mae": 10.467227935791016,
-                "crps_approx": 33.61982727050781,
-                "coverage_p05_p95": 0.9172398491235856,
+                "rmse": 14.675557187369945,
+                "mae": 10.513263702392578,
+                "crps_approx": 30.66649055480957,
+                "coverage_p05_p95": 0.9072553805191924,
                 "count": 4507
               },
               "SILTARA": {
-                "rmse": 21.719407588965797,
-                "mae": 16.253782272338867,
-                "crps_approx": 49.84293746948242,
-                "coverage_p05_p95": 0.9183718371837184,
+                "rmse": 21.688796650494105,
+                "mae": 16.052175521850586,
+                "crps_approx": 50.580684661865234,
+                "coverage_p05_p95": 0.9240924092409241,
                 "count": 4545
               }
             },
             "fairness": {
-              "rmse_max_min_ratio": 1.4851015773789507,
-              "rmse_max": 21.719407588965797,
-              "rmse_min": 14.624863322344781
+              "rmse_max_min_ratio": 1.477885737051257,
+              "rmse_max": 21.688796650494105,
+              "rmse_min": 14.675557187369945
             }
           }
         },
         "calibration": {
-          "h1": {
-            "bias_by_quantile": {
-              "q05": -1.5529085397720337,
-              "q50": -0.0491180419921875,
-              "q95": 2.4183013439178467,
-              "q99": 7.1653337478637695
-            },
-            "val_empirical_by_quantile": {
-              "q05": 0.05001383274793625,
-              "q50": 0.5000276565551758,
-              "q95": 0.9499861598014832,
-              "q99": 0.9899861812591553
-            },
-            "val_mean_abs_quantile_error": 1.7286278307437897e-05,
-            "num_samples": 18075
-          },
-          "h24": {
-            "bias_by_quantile": {
-              "q05": -5.245901107788086,
-              "q50": -1.3293647766113281,
-              "q95": 10.412605285644531,
-              "q99": 21.973066329956055
-            },
-            "val_empirical_by_quantile": {
-              "q05": 0.05001383274793625,
-              "q50": 0.5000276565551758,
-              "q95": 0.9499861598014832,
-              "q99": 0.9899861812591553
-            },
-            "val_mean_abs_quantile_error": 1.7286278307437897e-05,
-            "num_samples": 18075
-          },
           "h168": {
             "bias_by_quantile": {
-              "q05": -7.518743991851807,
-              "q50": -2.509695053100586,
-              "q95": 17.302515029907227,
-              "q99": 30.528284072875977
+              "q05": -7.982300758361816,
+              "q50": -2.422861099243164,
+              "q95": 17.216392517089844,
+              "q99": 27.258079528808594
             },
             "val_empirical_by_quantile": {
               "q05": 0.05001383274793625,
@@ -467,43 +197,15 @@
   "comparison": [
     {
       "pollutant": "pm25",
-      "horizon": 1,
-      "lstm_rmse": 21.6192329963753,
-      "xgb_rmse": 6.853967016340536,
-      "rmse_improvement_pct": -215.42656894661013,
-      "lstm_crps": 56.695770263671875,
-      "xgb_crps": 10.61725902557373,
-      "crps_improvement_pct": -433.9962991117491,
-      "lstm_coverage": 0.6355477925676083,
-      "xgb_coverage": 0.9511724137931035,
-      "lstm_pit_pvalue": 0.0,
-      "xgb_pit_pvalue": 0.0
-    },
-    {
-      "pollutant": "pm25",
-      "horizon": 24,
-      "lstm_rmse": 21.388870111542534,
-      "xgb_rmse": 13.211814124892278,
-      "rmse_improvement_pct": -61.89199991274421,
-      "lstm_crps": 54.92341613769531,
-      "xgb_crps": 29.065662384033203,
-      "crps_improvement_pct": -88.96323576601746,
-      "lstm_coverage": 0.6476052978469651,
-      "xgb_coverage": 0.9569103448275862,
-      "lstm_pit_pvalue": 0.0,
-      "xgb_pit_pvalue": 0.0
-    },
-    {
-      "pollutant": "pm25",
       "horizon": 168,
-      "lstm_rmse": 21.408592908965243,
-      "xgb_rmse": 17.5804512349655,
-      "rmse_improvement_pct": -21.774990999013763,
+      "lstm_rmse": 21.408594334447862,
+      "xgb_rmse": 17.48325527720426,
+      "rmse_improvement_pct": -22.45199189170279,
       "lstm_crps": 56.719173431396484,
-      "xgb_crps": 40.13761901855469,
-      "crps_improvement_pct": -41.3117539562487,
+      "xgb_crps": 39.00157165527344,
+      "crps_improvement_pct": -45.4279174509303,
       "lstm_coverage": 0.6956582146578674,
-      "xgb_coverage": 0.9303724137931034,
+      "xgb_coverage": 0.9308137931034483,
       "lstm_pit_pvalue": 0.0,
       "xgb_pit_pvalue": 0.0
     }
@@ -511,55 +213,19 @@
   "calibration_benchmark": [
     {
       "pollutant": "pm25",
-      "horizon": 1,
-      "lstm_cov95": 0.6355477925676083,
-      "xgb_cov95": 0.9511724137931035,
-      "lstm_cov95_abs_err": 0.26445220743239173,
-      "xgb_cov95_abs_err": 0.051172413793103444,
-      "lstm_tail_p05_abs_err": 0.3036107932301391,
-      "xgb_tail_p05_abs_err": 0.022027586206896554,
-      "lstm_tail_p95_abs_err": 0.0391585857977474,
-      "xgb_tail_p95_abs_err": 0.0291448275862069,
-      "lstm_tail_p99_abs_err": 0.009217008974281756,
-      "xgb_tail_p99_abs_err": 0.006248275862068966,
-      "lstm_interval_width": 84.10557556152344,
-      "xgb_interval_width": 15.948883056640625,
-      "lstm_cross_rate": 0.0,
-      "xgb_cross_rate": 0.0
-    },
-    {
-      "pollutant": "pm25",
-      "horizon": 24,
-      "lstm_cov95": 0.6476052978469651,
-      "xgb_cov95": 0.9569103448275862,
-      "lstm_cov95_abs_err": 0.25239470215303494,
-      "xgb_cov95_abs_err": 0.05691034482758617,
-      "lstm_tail_p05_abs_err": 0.28871068984997805,
-      "xgb_tail_p05_abs_err": 0.023462068965517245,
-      "lstm_tail_p95_abs_err": 0.03631598769694307,
-      "xgb_tail_p95_abs_err": 0.03344827586206897,
-      "lstm_tail_p99_abs_err": 0.009058439520431862,
-      "xgb_tail_p99_abs_err": 0.007296551724137931,
-      "lstm_interval_width": 79.44015502929688,
-      "xgb_interval_width": 45.09181594848633,
-      "lstm_cross_rate": 0.0,
-      "xgb_cross_rate": 0.0
-    },
-    {
-      "pollutant": "pm25",
       "horizon": 168,
       "lstm_cov95": 0.6956582146578674,
-      "xgb_cov95": 0.9303724137931034,
+      "xgb_cov95": 0.9308137931034483,
       "lstm_cov95_abs_err": 0.20434178534213265,
-      "xgb_cov95_abs_err": 0.030372413793103403,
+      "xgb_cov95_abs_err": 0.030813793103448228,
       "lstm_tail_p05_abs_err": 0.2407259465092046,
-      "xgb_tail_p05_abs_err": 0.009862068965517237,
+      "xgb_tail_p05_abs_err": 0.008482758620689652,
       "lstm_tail_p95_abs_err": 0.0363841611670719,
-      "xgb_tail_p95_abs_err": 0.040234482758620696,
+      "xgb_tail_p95_abs_err": 0.039296551724137936,
       "lstm_tail_p99_abs_err": 0.00951372004168114,
-      "xgb_tail_p99_abs_err": 0.00856551724137931,
-      "lstm_interval_width": 84.17515563964844,
-      "xgb_interval_width": 63.825042724609375,
+      "xgb_tail_p99_abs_err": 0.008013793103448276,
+      "lstm_interval_width": 84.17514038085938,
+      "xgb_interval_width": 63.126991271972656,
       "lstm_cross_rate": 0.0,
       "xgb_cross_rate": 0.0
     }
@@ -567,36 +233,36 @@
   "split_representativeness": {
     "lstm": {
       "train": {
-        "rows": 81423,
+        "rows": 81427,
         "region_distribution": {
           "AIIMS": {
-            "count": 21513,
-            "fraction": 0.26421281456099627
+            "count": 21514,
+            "fraction": 0.26421211637417563
           },
           "Bhatagaon": {
-            "count": 18507,
-            "fraction": 0.22729449909730665
+            "count": 18508,
+            "fraction": 0.2272956144767706
           },
           "IGKV": {
-            "count": 21063,
-            "fraction": 0.25868612062930624
+            "count": 21064,
+            "fraction": 0.25868569393444435
           },
           "SILTARA": {
-            "count": 20340,
-            "fraction": 0.24980656571239085
+            "count": 20341,
+            "fraction": 0.24980657521460942
           }
         },
         "time": {
-          "min": "2022-06-01T02:00:00",
+          "min": "2022-06-01T01:00:00",
           "max": "2024-11-26T23:00:00"
         },
         "pollutants": {
           "pm25": {
-            "mean": 0.21350102803780105,
-            "std": 1.0470538074344264,
+            "mean": 0.21360089116182587,
+            "std": 1.0473769248764115,
             "p05": -0.8142755681818182,
             "p50": -0.0021306818181817,
-            "p95": 1.9062144886363617
+            "p95": 1.906374289772727
           }
         }
       },
@@ -669,26 +335,26 @@
         }
       },
       "val_vs_train": {
-        "rows_ratio_b_over_a": 0.2110583004802083,
-        "region_fraction_max_abs_diff": 0.021386149724447356,
+        "rows_ratio_b_over_a": 0.2110479325039606,
+        "region_fraction_max_abs_diff": 0.02138572302958547,
         "pollutant_ks": {
           "pm25": {
-            "mean_z_shift": 0.13360534539605046,
-            "mean_delta": 0.2297186670149932,
-            "std_a": 1.0470538074344264,
+            "mean_z_shift": 0.1335347172282235,
+            "mean_delta": 0.22961880389096836,
+            "std_a": 1.0473769248764115,
             "std_b": 2.3917108068709525
           }
         },
         "flags": []
       },
       "test_vs_train": {
-        "rows_ratio_b_over_a": 0.2121636392665463,
-        "region_fraction_max_abs_diff": 0.03539725198807686,
+        "rows_ratio_b_over_a": 0.21215321699190687,
+        "region_fraction_max_abs_diff": 0.035396136608612905,
         "pollutant_ks": {
           "pm25": {
-            "mean_z_shift": 0.3409018476509331,
-            "mean_delta": -0.4242443795499376,
-            "std_a": 1.0470538074344264,
+            "mean_z_shift": 0.34093783197011457,
+            "mean_delta": -0.4243442426739624,
+            "std_a": 1.0473769248764115,
             "std_b": 1.4418994351091177
           }
         },
@@ -711,27 +377,27 @@
         "train": {
           "h1": {
             "seq_len": 168,
-            "total": 80751,
-            "region_AIIMS": 21345,
-            "region_Bhatagaon": 18339,
-            "region_IGKV": 20895,
-            "region_SILTARA": 20172
+            "total": 80755,
+            "region_AIIMS": 21346,
+            "region_Bhatagaon": 18340,
+            "region_IGKV": 20896,
+            "region_SILTARA": 20173
           },
           "h24": {
             "seq_len": 336,
-            "total": 80079,
-            "region_AIIMS": 21177,
-            "region_Bhatagaon": 18171,
-            "region_IGKV": 20727,
-            "region_SILTARA": 20004
+            "total": 80083,
+            "region_AIIMS": 21178,
+            "region_Bhatagaon": 18172,
+            "region_IGKV": 20728,
+            "region_SILTARA": 20005
           },
           "h168": {
             "seq_len": 720,
-            "total": 78543,
-            "region_AIIMS": 20793,
-            "region_Bhatagaon": 17787,
-            "region_IGKV": 20343,
-            "region_SILTARA": 19620
+            "total": 78547,
+            "region_AIIMS": 20794,
+            "region_Bhatagaon": 17788,
+            "region_IGKV": 20344,
+            "region_SILTARA": 19621
           }
         },
         "val": {
@@ -790,36 +456,6 @@
     },
     "xgb_target_distribution_checks": [
       {
-        "target": "target_pm25_h1",
-        "train_mean": 32.766685485839844,
-        "val_mean": 37.4263801574707,
-        "test_mean": 20.956787109375,
-        "train_std": 26.146181106567383,
-        "val_std": 27.519481658935547,
-        "test_std": 19.459867477416992,
-        "ks_train_vs_val": 0.1242210283628433,
-        "ks_train_vs_val_pvalue": 1.6824909515119154e-201,
-        "ks_train_vs_test": 0.27090153808705786,
-        "ks_train_vs_test_pvalue": 0.0,
-        "ks_val_vs_test": 0.38055000715409937,
-        "ks_val_vs_test_pvalue": 0.0
-      },
-      {
-        "target": "target_pm25_h24",
-        "train_mean": 32.76918411254883,
-        "val_mean": 37.38847732543945,
-        "test_mean": 20.965898513793945,
-        "train_std": 26.150392532348633,
-        "val_std": 27.509105682373047,
-        "test_std": 19.3800106048584,
-        "ks_train_vs_val": 0.1235249470433974,
-        "ks_train_vs_val_pvalue": 3.0243667852142357e-199,
-        "ks_train_vs_test": 0.2692783939569878,
-        "ks_train_vs_test_pvalue": 0.0,
-        "ks_val_vs_test": 0.3780616015643631,
-        "ks_val_vs_test_pvalue": 0.0
-      },
-      {
         "target": "target_pm25_h168",
         "train_mean": 32.80050277709961,
         "val_mean": 36.759666442871094,
@@ -837,7 +473,7 @@
     ]
   },
   "phase1_data_quality_context": {
-    "generated_at": "2026-04-17T18:52:55.808732",
+    "generated_at": "2026-04-18T21:28:19.218499",
     "all_pollutants_loss_totals": {
       "pm25": {
         "raw": 125017,
@@ -1069,60 +705,22 @@
   "fair_comparison": [
     {
       "pollutant": "pm25",
-      "horizon": 1,
-      "n_common": 16581,
-      "lstm_rmse": 21.62507056075916,
-      "xgb_rmse": 6.334570646722658,
-      "rmse_improvement_pct": -241.38178839235786,
-      "lstm_crps": 56.69660949707031,
-      "xgb_crps": 10.632336616516113,
-      "crps_improvement_pct": -433.2469384857384,
-      "lstm_coverage": 0.6356673300765937,
-      "xgb_coverage": 0.9506664254266932,
-      "lstm_pit_ks": 0.3556513041257858,
-      "xgb_pit_ks": 0.22019541263580322,
-      "lstm_pit_pvalue": 0.0,
-      "xgb_pit_pvalue": 0.0,
-      "lstm_fairness_ratio": 1.1939457155301993,
-      "xgb_fairness_ratio": 2.3995019888238884
-    },
-    {
-      "pollutant": "pm25",
-      "horizon": 24,
-      "n_common": 15909,
-      "lstm_rmse": 21.3950650808651,
-      "xgb_rmse": 13.35658379558473,
-      "rmse_improvement_pct": -60.18366229198248,
-      "lstm_crps": 54.92490005493164,
-      "xgb_crps": 29.325414657592773,
-      "crps_improvement_pct": -87.29453852994638,
-      "lstm_coverage": 0.6476208435476775,
-      "xgb_coverage": 0.9536111634923629,
-      "lstm_pit_ks": 0.33867621421813965,
-      "xgb_pit_ks": 0.21742671728134155,
-      "lstm_pit_pvalue": 0.0,
-      "xgb_pit_pvalue": 0.0,
-      "lstm_fairness_ratio": 1.216656166244911,
-      "xgb_fairness_ratio": 1.478642889149252
-    },
-    {
-      "pollutant": "pm25",
       "horizon": 168,
       "n_common": 14373,
-      "lstm_rmse": 21.416115997399306,
-      "xgb_rmse": 18.770685204511715,
-      "rmse_improvement_pct": -14.09341621824086,
+      "lstm_rmse": 21.416118134872082,
+      "xgb_rmse": 18.730620681735214,
+      "rmse_improvement_pct": -14.337471772921957,
       "lstm_crps": 56.71979522705078,
-      "xgb_crps": 41.37117385864258,
-      "crps_improvement_pct": -37.09979663823782,
+      "xgb_crps": 40.2584114074707,
+      "crps_improvement_pct": -40.889302990543136,
       "lstm_coverage": 0.6958185486676407,
-      "xgb_coverage": 0.9172754470187157,
+      "xgb_coverage": 0.9167188478396995,
       "lstm_pit_ks": 0.2905447781085968,
-      "xgb_pit_ks": 0.26489681005477905,
+      "xgb_pit_ks": 0.2535148859024048,
       "lstm_pit_pvalue": 0.0,
       "xgb_pit_pvalue": 0.0,
-      "lstm_fairness_ratio": 1.357542427953895,
-      "xgb_fairness_ratio": 1.5808515049354794
+      "lstm_fairness_ratio": 1.3575424334265278,
+      "xgb_fairness_ratio": 1.5899117232752487
     }
   ],
   "visualizations": [

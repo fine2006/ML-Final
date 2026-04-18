@@ -555,6 +555,22 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 | | Metadata leakage policy now documents single-latency contract (source delay OR feature lag, not both) |
 | **Status** | ✓ APPROVED (implemented) |
 
+### Decision 4.25: Runtime Compatibility Hardening (Backend + Legacy Feature Fallback)
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Keep strict runtime assumptions (interactive matplotlib backend, exact legacy feature names only) |
+| | (B) Enforce non-interactive plotting backend and add backward-compatible feature mapping for legacy checkpoints |
+| **Chosen** | (B) Runtime hardening + legacy compatibility |
+| **Rationale** | - Notebook/script execution can inherit an inline matplotlib backend that fails in non-interactive script runs |
+| | - New single-latency preprocessing uses raw weather columns, while older checkpoints may still reference `*_lag_1` weather feature names |
+| | - Evaluation/inference should fail only on truly missing signal, not on recoverable naming/back-end incompatibilities |
+| **Implementation** | `data_investigation.py` and `evaluate.py` now force `Agg` backend via env + `matplotlib.use(..., force=True)` |
+| | `evaluate.py` and `predict.py` now adapt legacy weather feature names (`temperature_lag_1`,`humidity_lag_1`,`wind_speed_lag_1`,`wind_direction_lag_1`) to raw columns when available |
+| | Notebook run scripts now use `--device auto` for train/eval calls to remain portable across CPU-only and GPU environments |
+| **Evidence** | `uv run` smoke tests passed for `scripts/evaluate.py` and `scripts/predict.py` with legacy-to-raw remap logging enabled |
+| **Status** | ✓ APPROVED (implemented) |
+
 ---
 
 ## 5. Evaluation Framework

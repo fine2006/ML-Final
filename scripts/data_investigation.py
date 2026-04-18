@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import re
 import sys
@@ -27,6 +28,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+os.environ["MPLBACKEND"] = "Agg"
+
+import matplotlib
+matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd

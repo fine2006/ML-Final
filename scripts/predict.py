@@ -162,6 +162,31 @@ def label_quantile(q: float) -> str:
     return f"p{int(round(q * 100)):02d}"
 
 
+def adapt_checkpoint_feature_columns(
+    feature_cols: list[str],
+    available_cols: set[str],
+) -> tuple[list[str], dict[str, str]]:
+    adapted = list(feature_cols)
+    remapped: dict[str, str] = {}
+
+    legacy_to_raw = {
+        "temperature_lag_1": "temperature",
+        "humidity_lag_1": "humidity",
+        "wind_speed_lag_1": "wind_speed",
+        "wind_direction_lag_1": "wind_direction",
+    }
+
+    for i, col in enumerate(adapted):
+        if col in available_cols:
+            continue
+        mapped = legacy_to_raw.get(col)
+        if mapped and mapped in available_cols:
+            adapted[i] = mapped
+            remapped[col] = mapped
+
+    return adapted, remapped
+
+
 def load_checkpoint_for_horizon(
     models_dir: Path,
     pollutant: str,
@@ -262,16 +287,27 @@ def main() -> None:
     for pollutant in pollutants:
         checkpoint, model_path = checkpoint_cache[pollutant]
         feature_cols = checkpoint["feature_columns"]
+        adapted_feature_cols, remapped = adapt_checkpoint_feature_columns(
+            feature_cols=feature_cols,
+            available_cols=set(region_df.columns),
+        )
+        if remapped:
+            logger.info(
+                "[%s h%d] adapted legacy feature columns: %s",
+                pollutant,
+                args.horizon,
+                remapped,
+            )
         model_horizons = [int(h) for h in checkpoint.get("horizons", ALL_HORIZONS)]
         seq_len = int(checkpoint.get("seq_len", 672))
 
-        missing = [c for c in feature_cols if c not in region_df.columns]
+        missing = [c for c in adapted_feature_cols if c not in region_df.columns]
         if missing:
             raise ValueError(
                 f"Input table missing required feature columns for {pollutant}: {missing}"
             )
 
-        window = region_df.iloc[pos - seq_len : pos][feature_cols]
+        window = region_df.iloc[pos - seq_len : pos][adapted_feature_cols]
         if window.isna().any().any():
             raise ValueError(
                 f"NaN values present in inference window for {pollutant}; cannot run prediction"
@@ -295,7 +331,7 @@ def main() -> None:
             )
 
         model = HierarchicalQuantileLSTM(
-            input_dim=len(feature_cols),
+            input_dim=len(adapted_feature_cols),
             hidden_dim=hidden_dim,
             num_layers=num_layers,
             num_heads=num_heads,

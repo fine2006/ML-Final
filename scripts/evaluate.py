@@ -11,15 +11,18 @@ import argparse
 import json
 import logging
 import math
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+os.environ["MPLBACKEND"] = "Agg"
+
 import matplotlib
 
-matplotlib.use("Agg")
+matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -231,6 +234,9 @@ class LSTMInferenceDataset(Dataset):
 
         for region_name, region_df in df.groupby("region"):
             region_df = region_df.sort_values("timestamp").reset_index(drop=True)
+            missing = [c for c in feature_columns if c not in region_df.columns]
+            if missing:
+                raise KeyError(f"Missing feature columns in inference split: {missing}")
             feat = region_df[feature_columns].to_numpy(dtype=np.float32)
             targ = region_df[target_columns].to_numpy(dtype=np.float32)
             ts = pd.to_datetime(region_df["timestamp"], errors="coerce").dt.floor("h")
@@ -278,6 +284,31 @@ def _load_lstm_checkpoint_for_horizon(
         if horizon in ck_horizons:
             return checkpoint, legacy
     return None, None
+
+
+def _adapt_checkpoint_feature_columns(
+    feature_cols: list[str],
+    available_cols: set[str],
+) -> tuple[list[str], dict[str, str]]:
+    adapted = list(feature_cols)
+    remapped: dict[str, str] = {}
+
+    legacy_to_raw = {
+        "temperature_lag_1": "temperature",
+        "humidity_lag_1": "humidity",
+        "wind_speed_lag_1": "wind_speed",
+        "wind_direction_lag_1": "wind_direction",
+    }
+
+    for i, col in enumerate(adapted):
+        if col in available_cols:
+            continue
+        mapped = legacy_to_raw.get(col)
+        if mapped and mapped in available_cols:
+            adapted[i] = mapped
+            remapped[col] = mapped
+
+    return adapted, remapped
 
 
 def setup_logging() -> logging.Logger:
@@ -549,6 +580,17 @@ def evaluate_lstm_models(
                 continue
 
             feature_cols = checkpoint["feature_columns"]
+            adapted_feature_cols, remapped = _adapt_checkpoint_feature_columns(
+                feature_cols=feature_cols,
+                available_cols=set(test_df.columns),
+            )
+            if remapped:
+                logger.info(
+                    "[LSTM %s h%d] adapted legacy feature columns: %s",
+                    pollutant,
+                    horizon,
+                    remapped,
+                )
             target_col = f"target_{pollutant}_h{horizon}"
             if target_col not in test_df.columns:
                 logger.warning(
@@ -571,7 +613,7 @@ def evaluate_lstm_models(
 
             infer_val_ds = LSTMInferenceDataset(
                 df=val_df,
-                feature_columns=feature_cols,
+                feature_columns=adapted_feature_cols,
                 target_columns=[target_col],
                 region_mapping=metadata["region_mapping"],
                 max_seq_len=seq_len,
@@ -587,7 +629,7 @@ def evaluate_lstm_models(
 
             infer_ds = LSTMInferenceDataset(
                 df=test_df,
-                feature_columns=feature_cols,
+                feature_columns=adapted_feature_cols,
                 target_columns=[target_col],
                 region_mapping=metadata["region_mapping"],
                 max_seq_len=seq_len,
@@ -625,7 +667,7 @@ def evaluate_lstm_models(
                 continue
 
             model = HierarchicalQuantileLSTM(
-                input_dim=len(feature_cols),
+                input_dim=len(adapted_feature_cols),
                 hidden_dim=hidden_dim,
                 num_layers=num_layers,
                 num_heads=num_heads,
