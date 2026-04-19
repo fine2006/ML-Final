@@ -70,6 +70,140 @@ class QuantilePayload:
     metrics: dict[str, Any]
 
 
+def _compute_mean_by_month_hour(
+    train_rows: pd.DataFrame,
+    value_col: str,
+) -> dict[tuple[int, int], float]:
+    work = train_rows[["timestamp", value_col]].copy()
+    work["timestamp"] = pd.to_datetime(work["timestamp"], errors="coerce").dt.floor("h")
+    work = work.dropna(subset=["timestamp", value_col])
+    if work.empty:
+        return {}
+    work["month"] = work["timestamp"].dt.month.astype(int)
+    work["hour"] = work["timestamp"].dt.hour.astype(int)
+    grouped = work.groupby(["month", "hour"])[value_col].mean()
+    return {tuple(map(int, k)): float(v) for k, v in grouped.items()}
+
+
+def _predict_climatology(
+    timestamps: np.ndarray,
+    climatology_map: dict[tuple[int, int], float],
+    fallback_mean: float,
+) -> np.ndarray:
+    out = np.empty(len(timestamps), dtype=np.float32)
+    ts_idx = pd.to_datetime(pd.Series(timestamps), errors="coerce").dt.floor("h")
+    for i, ts in enumerate(ts_idx):
+        if pd.isna(ts):
+            out[i] = float(fallback_mean)
+            continue
+        key = (int(ts.month), int(ts.hour))
+        out[i] = float(climatology_map.get(key, fallback_mean))
+    return out
+
+
+def _rmse_over_mean(y_true: np.ndarray, rmse: float) -> float:
+    mean_abs = float(np.mean(np.abs(y_true)))
+    if not np.isfinite(mean_abs) or mean_abs <= 1e-8:
+        return float("nan")
+    return float(rmse / mean_abs)
+
+
+def build_operational_gate_table(
+    fair_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return sorted(
+        [dict(r) for r in fair_rows], key=lambda r: (int(r["horizon"]), str(r["pollutant"]))
+    )
+
+
+def compute_gate_aggregate_summary(
+    gate_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "overall": {
+            "total": int(len(gate_rows)),
+            "pass_count": int(sum(1 for r in gate_rows if bool(r.get("gate_pass", False)))),
+        },
+        "by_pollutant": {},
+    }
+
+    pollutants = sorted(set(str(r.get("pollutant")) for r in gate_rows))
+    for pollutant in pollutants:
+        rows = [r for r in gate_rows if str(r.get("pollutant")) == pollutant]
+        if not rows:
+            continue
+        pass_rows = [r for r in rows if bool(r.get("gate_pass", False))]
+        best_row = min(
+            rows,
+            key=lambda r: (
+                0 if bool(r.get("gate_pass", False)) else 1,
+                float(r.get("lstm_rmse_over_mean", np.inf)),
+                -float(r.get("lstm_r2", -np.inf)),
+                float(abs(float(r.get("lstm_coverage", 0.0)) - 0.90)),
+                float(r.get("lstm_pit_ks", np.inf)),
+            ),
+        )
+        summary["by_pollutant"][pollutant] = {
+            "total": int(len(rows)),
+            "pass_count": int(len(pass_rows)),
+            "best_candidate": {
+                "lstm_rmse_over_mean": float(best_row.get("lstm_rmse_over_mean", np.nan)),
+                "lstm_r2": float(best_row.get("lstm_r2", np.nan)),
+                "lstm_coverage": float(best_row.get("lstm_coverage", np.nan)),
+                "lstm_pit_ks": float(best_row.get("lstm_pit_ks", np.nan)),
+                "gate_pass": bool(best_row.get("gate_pass", False)),
+            },
+        }
+
+    return summary
+
+
+def assign_operational_tiered_gates(
+    gate_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in gate_rows:
+        pollutant = str(row["pollutant"])
+        rmse_over_mean = float(row.get("lstm_rmse_over_mean", float("nan")))
+        r2 = float(row.get("lstm_r2", float("nan")))
+        coverage = float(row.get("lstm_coverage", float("nan")))
+
+        if pollutant in {"pm25", "pm10"}:
+            pass_gate = bool(
+                np.isfinite(rmse_over_mean)
+                and np.isfinite(r2)
+                and rmse_over_mean < 0.5
+                and r2 > 0.3
+            )
+            gate_label = "pm_production"
+        else:
+            pass_gate = bool(
+                np.isfinite(rmse_over_mean)
+                and rmse_over_mean < 0.8
+                and bool(row.get("beats_persistence", False))
+            )
+            gate_label = "gas_rescue"
+
+        row_copy = dict(row)
+        row_copy["gate_label"] = gate_label
+        row_copy["gate_pass"] = pass_gate
+        row_copy["coverage_target_90_abs_err"] = float(abs(coverage - 0.90))
+        out.append(row_copy)
+    return out
+
+
+def format_pit_shape(ks_stat: float, coverage: float) -> str:
+    if not np.isfinite(ks_stat):
+        return "unknown"
+    if ks_stat <= 0.08:
+        return "near_uniform"
+    if coverage < 0.85:
+        return "u_shaped_underconfident"
+    if coverage > 0.95:
+        return "inverted_u_overconfident"
+    return "deviated"
+
+
 def _enforce_monotonic_quantiles(pred_q: np.ndarray) -> np.ndarray:
     if pred_q.ndim != 2:
         raise ValueError(f"pred_q must be 2D, got shape={pred_q.shape}")
@@ -311,6 +445,58 @@ def _adapt_checkpoint_feature_columns(
     return adapted, remapped
 
 
+def _extract_values_from_records(
+    df: pd.DataFrame,
+    records: list[tuple[str, int]],
+    value_col: str,
+) -> np.ndarray:
+    per_region: dict[str, np.ndarray] = {}
+    for region_name, region_df in df.groupby("region"):
+        per_region[str(region_name)] = region_df.sort_values("timestamp")[
+            value_col
+        ].to_numpy(dtype=np.float32)
+
+    out = np.empty(len(records), dtype=np.float32)
+    for i, (region_name, end_idx) in enumerate(records):
+        key = str(region_name)
+        arr = per_region.get(key)
+        if arr is None:
+            raise KeyError(
+                f"Missing region '{key}' while extracting '{value_col}' from records"
+            )
+        if end_idx < 0 or end_idx >= len(arr):
+            raise IndexError(
+                f"Invalid end_idx={end_idx} for region='{key}' (len={len(arr)})"
+            )
+        out[i] = arr[end_idx]
+    return out
+
+
+def _build_delta_baseline_column(
+    df: pd.DataFrame,
+    pollutant: str,
+    baseline_window: int,
+    scaler_meta: dict[str, Any],
+) -> tuple[pd.DataFrame, str]:
+    if baseline_window <= 0:
+        raise ValueError(f"baseline_window must be >0, got {baseline_window}")
+
+    work = df.copy()
+    scaler = scaler_meta.get(pollutant, {}) if isinstance(scaler_meta, dict) else {}
+    median = float(scaler.get("median", 0.0))
+    iqr = float(scaler.get("iqr", 1.0))
+    if not np.isfinite(iqr) or abs(iqr) < 1e-8:
+        iqr = 1.0
+
+    raw_col = f"raw_{pollutant}"
+    baseline_col = f"baseline_{pollutant}_ma{baseline_window}"
+    work[raw_col] = work[pollutant].astype(float) * iqr + median
+    work[baseline_col] = work.groupby("region")[raw_col].transform(
+        lambda s: s.rolling(window=baseline_window, min_periods=1).mean()
+    )
+    return work, baseline_col
+
+
 def setup_logging() -> logging.Logger:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -520,6 +706,7 @@ def evaluate_lstm_models(
         test_df["timestamp"], errors="coerce"
     ).dt.floor("h")
     metadata = json.loads((data_dir / "metadata.json").read_text(encoding="utf-8"))
+    scaler_meta = metadata.get("scaler", {}) if isinstance(metadata, dict) else {}
     region_name_by_id = {int(v): str(k) for k, v in metadata["region_mapping"].items()}
 
     summary: dict[str, Any] = {"pollutants": {}, "source": str(data_dir.resolve())}
@@ -611,10 +798,35 @@ def evaluate_lstm_models(
                 )
                 continue
 
+            target_mode = str(checkpoint.get("target_mode", "level"))
+            delta_baseline_window = int(checkpoint.get("delta_baseline_window", 3) or 3)
+            eval_test_df = test_df
+            eval_val_df = val_df
+            infer_target_col = target_col
+            if target_mode == "delta_ma3":
+                val_delta_col = f"target_delta_{pollutant}_h{horizon}_ma{delta_baseline_window}"
+                test_delta_col = f"target_delta_{pollutant}_h{horizon}_ma{delta_baseline_window}"
+
+                eval_val_df, val_baseline_col = _build_delta_baseline_column(
+                    val_df,
+                    pollutant=pollutant,
+                    baseline_window=delta_baseline_window,
+                    scaler_meta=scaler_meta,
+                )
+                eval_test_df, test_baseline_col = _build_delta_baseline_column(
+                    test_df,
+                    pollutant=pollutant,
+                    baseline_window=delta_baseline_window,
+                    scaler_meta=scaler_meta,
+                )
+                eval_val_df[val_delta_col] = eval_val_df[target_col] - eval_val_df[val_baseline_col]
+                eval_test_df[test_delta_col] = eval_test_df[target_col] - eval_test_df[test_baseline_col]
+                infer_target_col = test_delta_col
+
             infer_val_ds = LSTMInferenceDataset(
-                df=val_df,
+                df=eval_val_df,
                 feature_columns=adapted_feature_cols,
-                target_columns=[target_col],
+                target_columns=[infer_target_col],
                 region_mapping=metadata["region_mapping"],
                 max_seq_len=seq_len,
             )
@@ -628,9 +840,9 @@ def evaluate_lstm_models(
                 continue
 
             infer_ds = LSTMInferenceDataset(
-                df=test_df,
+                df=eval_test_df,
                 feature_columns=adapted_feature_cols,
-                target_columns=[target_col],
+                target_columns=[infer_target_col],
                 region_mapping=metadata["region_mapping"],
                 max_seq_len=seq_len,
             )
@@ -719,6 +931,32 @@ def evaluate_lstm_models(
             pred_val_h = pred_val_all[:, horizon_idx, :]
             y_h = tgt_all[:, 0]
             pred_h = pred_all[:, horizon_idx, :]
+
+            if target_mode == "delta_ma3":
+                val_baseline = _extract_values_from_records(
+                    eval_val_df,
+                    records=infer_val_ds.records,
+                    value_col=f"baseline_{pollutant}_ma{delta_baseline_window}",
+                )
+                test_baseline = _extract_values_from_records(
+                    eval_test_df,
+                    records=infer_ds.records,
+                    value_col=f"baseline_{pollutant}_ma{delta_baseline_window}",
+                )
+
+                y_val_h = _extract_values_from_records(
+                    eval_val_df,
+                    records=infer_val_ds.records,
+                    value_col=target_col,
+                )
+                y_h = _extract_values_from_records(
+                    eval_test_df,
+                    records=infer_ds.records,
+                    value_col=target_col,
+                )
+
+                pred_val_h = pred_val_h + val_baseline[:, None]
+                pred_h = pred_h + test_baseline[:, None]
 
             if calibrate_quantiles:
                 if len(y_val_h) < CALIBRATION_MIN_SAMPLES:
@@ -1001,6 +1239,8 @@ def build_fair_intersection_comparison(
     xgb_payloads: dict[str, QuantilePayload],
     x_test_df: pd.DataFrame,
     y_test_df: pd.DataFrame,
+    climatology_by_pollutant: dict[str, dict[tuple[int, int], float]],
+    climatology_fallback_mean: dict[str, float],
     logger: logging.Logger,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -1058,9 +1298,26 @@ def build_fair_intersection_comparison(
             x_idx = merged["x_idx"].to_numpy(dtype=np.int64)
             y_true = merged["y_true"].to_numpy(dtype=np.float32)
             regions = merged["region"].to_numpy(dtype=object)
+            ts_values = merged["timestamp"].to_numpy(copy=True)
+            forecast_ts_values = (
+                pd.to_datetime(merged["timestamp"], errors="coerce").dt.floor("h")
+                + pd.to_timedelta(int(horizon), unit="h")
+            ).to_numpy(copy=True)
 
             l_pred_aligned = l_pred[l_idx]
             x_pred_aligned = x_payload.predictions[horizon][x_idx]
+
+            persistence_pred: np.ndarray | None = None
+            if pollutant in x_test_df.columns:
+                persistence_pred = (
+                    x_test_df.iloc[x_idx][pollutant].to_numpy(dtype=np.float32)
+                )
+
+            clim_pred = _predict_climatology(
+                timestamps=forecast_ts_values,
+                climatology_map=climatology_by_pollutant.get(pollutant, {}),
+                fallback_mean=float(climatology_fallback_mean.get(pollutant, np.nan)),
+            )
 
             l_metrics, _ = compute_horizon_metrics(
                 y_true=y_true,
@@ -1085,8 +1342,17 @@ def build_fair_intersection_comparison(
                     "pollutant": pollutant,
                     "horizon": int(horizon),
                     "n_common": int(len(merged)),
+                    "mean_concentration": float(np.mean(y_true)),
                     "lstm_rmse": float(l_metrics["rmse"]),
                     "xgb_rmse": float(x_metrics["rmse"]),
+                    "lstm_r2": float(l_metrics["r2"]),
+                    "xgb_r2": float(x_metrics["r2"]),
+                    "lstm_rmse_over_mean": _rmse_over_mean(
+                        y_true, float(l_metrics["rmse"])
+                    ),
+                    "xgb_rmse_over_mean": _rmse_over_mean(
+                        y_true, float(x_metrics["rmse"])
+                    ),
                     "rmse_improvement_pct": improve(
                         float(l_metrics["rmse"]), float(x_metrics["rmse"])
                     ),
@@ -1101,6 +1367,26 @@ def build_fair_intersection_comparison(
                     "xgb_pit_ks": float(x_metrics["pit_ks_stat"]),
                     "lstm_pit_pvalue": float(l_metrics["pit_pvalue"]),
                     "xgb_pit_pvalue": float(x_metrics["pit_pvalue"]),
+                    "persistence_rmse_raw_yt": (
+                        float(np.sqrt(mean_squared_error(y_true, persistence_pred)))
+                        if persistence_pred is not None
+                        else float("nan")
+                    ),
+                    "climatology_rmse_month_hour": float(
+                        np.sqrt(mean_squared_error(y_true, clim_pred))
+                    ),
+                    "beats_persistence": (
+                        bool(
+                            float(l_metrics["rmse"])
+                            < float(np.sqrt(mean_squared_error(y_true, persistence_pred)))
+                        )
+                        if persistence_pred is not None
+                        else False
+                    ),
+                    "beats_climatology": bool(
+                        float(l_metrics["rmse"])
+                        < float(np.sqrt(mean_squared_error(y_true, clim_pred)))
+                    ),
                     "lstm_fairness_ratio": float(
                         (l_metrics.get("fairness") or {}).get(
                             "rmse_max_min_ratio", np.nan
@@ -1242,6 +1528,37 @@ def build_split_representativeness_report(
         },
         "xgb_target_distribution_checks": per_target_checks,
     }
+
+
+def build_month_hour_climatology_context(
+    lstm_data_dir: Path,
+    pollutants: list[str],
+) -> tuple[dict[str, dict[tuple[int, int], float]], dict[str, float]]:
+    train_df = pd.read_csv(lstm_data_dir / "train.csv", parse_dates=["timestamp"])
+    metadata = json.loads((lstm_data_dir / "metadata.json").read_text(encoding="utf-8"))
+    scaler_meta = metadata.get("scaler", {}) if isinstance(metadata, dict) else {}
+    climatology_by_pollutant: dict[str, dict[tuple[int, int], float]] = {}
+    fallback_mean: dict[str, float] = {}
+
+    for pollutant in pollutants:
+        if pollutant not in train_df.columns:
+            climatology_by_pollutant[pollutant] = {}
+            fallback_mean[pollutant] = float("nan")
+            continue
+        scaler = scaler_meta.get(pollutant, {}) if isinstance(scaler_meta, dict) else {}
+        median = float(scaler.get("median", 0.0))
+        iqr = float(scaler.get("iqr", 1.0))
+        if not np.isfinite(iqr) or abs(iqr) < 1e-8:
+            iqr = 1.0
+        raw_col = f"raw_{pollutant}"
+        train_df[raw_col] = train_df[pollutant].astype(float) * iqr + median
+        climatology_by_pollutant[pollutant] = _compute_mean_by_month_hour(
+            train_rows=train_df,
+            value_col=raw_col,
+        )
+        fallback_mean[pollutant] = float(train_df[raw_col].mean())
+
+    return climatology_by_pollutant, fallback_mean
 
 
 def load_phase1_quality_context() -> dict[str, Any]:
@@ -1682,15 +1999,46 @@ def main() -> None:
         requested_horizons=horizons,
     )
     phase1_quality_context = load_phase1_quality_context()
+    climatology_by_pollutant, climatology_fallback_mean = (
+        build_month_hour_climatology_context(
+            lstm_data_dir=lstm_data_dir,
+            pollutants=pollutants,
+        )
+    )
+
     fair_rows: list[dict[str, Any]] = []
+    gate_rows: list[dict[str, Any]] = []
+    gate_rows_with_tiers: list[dict[str, Any]] = []
     if args.fair_intersection:
         fair_rows = build_fair_intersection_comparison(
             lstm_payloads=lstm_payloads,
             xgb_payloads=xgb_payloads,
             x_test_df=x_test_df,
             y_test_df=y_test_df,
+            climatology_by_pollutant=climatology_by_pollutant,
+            climatology_fallback_mean=climatology_fallback_mean,
             logger=logger,
         )
+        fair_rows = [
+            {
+                **r,
+                "tag": os.environ.get("EVAL_EXPERIMENT_TAG", ""),
+            }
+            for r in fair_rows
+        ]
+        gate_rows = build_operational_gate_table(fair_rows)
+        gate_rows_with_tiers = assign_operational_tiered_gates(gate_rows)
+
+        for row in gate_rows_with_tiers:
+            row["lstm_pit_shape"] = format_pit_shape(
+                ks_stat=float(row.get("lstm_pit_ks", float("nan"))),
+                coverage=float(row.get("lstm_coverage", float("nan"))),
+            )
+            row["xgb_pit_shape"] = format_pit_shape(
+                ks_stat=float(row.get("xgb_pit_ks", float("nan"))),
+                coverage=float(row.get("xgb_coverage", float("nan"))),
+            )
+
         fair_path = models_dir / "fair_benchmark_summary.json"
         with open(fair_path, "w", encoding="utf-8") as handle:
             json.dump(
@@ -1699,6 +2047,23 @@ def main() -> None:
                     "pollutants_requested": pollutants,
                     "horizons_requested": horizons,
                     "rows": fair_rows,
+                    "operational_gates": {
+                        "definition": {
+                            "pm_production": {
+                                "rmse_over_mean_lt": 0.5,
+                                "r2_gt": 0.3,
+                            },
+                            "gas_rescue": {
+                                "rmse_over_mean_lt": 0.8,
+                                "must_beat": "raw_persistence_y_t",
+                            },
+                        },
+                        "baseline_notes": {
+                            "persistence": "raw_y_t_from_xgb_input_current_pollutant",
+                            "climatology": "train_split_mean_by_month_hour",
+                        },
+                        "rows": gate_rows_with_tiers,
+                    },
                 },
                 handle,
                 indent=2,
@@ -1724,6 +2089,11 @@ def main() -> None:
         "phase1_data_quality_context": phase1_quality_context,
         "fair_intersection_enabled": bool(args.fair_intersection),
         "fair_comparison": fair_rows,
+        "operational_gate_summary": {
+            "rows": gate_rows_with_tiers,
+            "pass_count": int(sum(1 for r in gate_rows_with_tiers if r.get("gate_pass"))),
+            "total": int(len(gate_rows_with_tiers)),
+        },
         "visualizations": visuals,
     }
 

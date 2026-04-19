@@ -169,6 +169,65 @@ class RegionSequenceDataset(Dataset):
         return {k: int(v) for k, v in self.record_counts_by_region.items()}
 
 
+def _build_delta_target_frame(
+    df: pd.DataFrame,
+    pollutant: str,
+    horizon: int,
+    baseline_window: int,
+    scaler_meta: dict[str, Any],
+) -> tuple[pd.DataFrame, str, str, str]:
+    if baseline_window <= 0:
+        raise ValueError(
+            f"delta baseline window must be > 0, got {baseline_window}"
+        )
+
+    raw_target_col = f"target_{pollutant}_h{horizon}"
+    baseline_col = f"baseline_{pollutant}_ma{baseline_window}"
+    delta_target_col = f"target_delta_{pollutant}_h{horizon}_ma{baseline_window}"
+
+    out = df.sort_values(["region", "timestamp"]).copy()
+
+    scaler = scaler_meta.get(pollutant, {}) if isinstance(scaler_meta, dict) else {}
+    median = float(scaler.get("median", 0.0))
+    iqr = float(scaler.get("iqr", 1.0))
+    if not np.isfinite(iqr) or abs(iqr) < 1e-8:
+        iqr = 1.0
+
+    raw_current_col = f"raw_{pollutant}"
+    out[raw_current_col] = out[pollutant].astype(np.float32) * iqr + median
+    out[baseline_col] = out.groupby("region")[raw_current_col].transform(
+        lambda s: s.rolling(window=baseline_window, min_periods=1).mean()
+    )
+    out[delta_target_col] = out[raw_target_col] - out[baseline_col]
+    return out, raw_target_col, baseline_col, delta_target_col
+
+
+def _extract_record_values(
+    df: pd.DataFrame,
+    column: str,
+    records: list[tuple[str, int]],
+) -> np.ndarray:
+    arrays: dict[str, np.ndarray] = {}
+    for region_name, region_df in df.groupby("region"):
+        arrays[str(region_name)] = region_df.sort_values("timestamp")[column].to_numpy(
+            dtype=np.float32
+        )
+
+    out = np.empty(len(records), dtype=np.float32)
+    for i, (region_name, end_idx) in enumerate(records):
+        key = str(region_name)
+        if key not in arrays:
+            raise KeyError(f"Missing region '{key}' while extracting column '{column}'")
+        arr = arrays[key]
+        if end_idx < 0 or end_idx >= len(arr):
+            raise IndexError(
+                f"Invalid record index end_idx={end_idx} for region='{key}' "
+                f"(len={len(arr)}) while extracting '{column}'"
+            )
+        out[i] = arr[end_idx]
+    return out
+
+
 class HierarchicalQuantileLSTM(nn.Module):
     def __init__(
         self,
@@ -559,6 +618,8 @@ def train_for_pollutant(
     split_tables: SplitTables,
     horizon: int,
     seq_len: int,
+    target_mode: str,
+    delta_baseline_window: int,
     min_attn_window: int,
     epochs: int,
     batch_size: int,
@@ -581,7 +642,55 @@ def train_for_pollutant(
 ) -> dict[str, Any]:
     metadata = split_tables.metadata
     feature_cols = metadata["feature_columns"]
-    target_cols = [f"target_{pollutant}_h{horizon}"]
+    raw_target_col = f"target_{pollutant}_h{horizon}"
+    baseline_col: str | None = None
+
+    if target_mode == "level":
+        train_df_local = split_tables.train
+        val_df_local = split_tables.val
+        test_df_local = split_tables.test
+        target_cols = [raw_target_col]
+    elif target_mode == "delta_ma3":
+        scaler_meta = metadata.get("scaler", {}) if isinstance(metadata, dict) else {}
+        (
+            train_df_local,
+            _train_raw_target_col,
+            baseline_col,
+            delta_target_col,
+        ) = _build_delta_target_frame(
+            split_tables.train,
+            pollutant=pollutant,
+            horizon=horizon,
+            baseline_window=delta_baseline_window,
+            scaler_meta=scaler_meta,
+        )
+        (
+            val_df_local,
+            _val_raw_target_col,
+            _val_baseline_col,
+            _val_delta_target_col,
+        ) = _build_delta_target_frame(
+            split_tables.val,
+            pollutant=pollutant,
+            horizon=horizon,
+            baseline_window=delta_baseline_window,
+            scaler_meta=scaler_meta,
+        )
+        (
+            test_df_local,
+            _test_raw_target_col,
+            _test_baseline_col,
+            _test_delta_target_col,
+        ) = _build_delta_target_frame(
+            split_tables.test,
+            pollutant=pollutant,
+            horizon=horizon,
+            baseline_window=delta_baseline_window,
+            scaler_meta=scaler_meta,
+        )
+        target_cols = [delta_target_col]
+    else:
+        raise ValueError(f"Unsupported target_mode='{target_mode}'")
 
     required_context_pollutants = ["pm25", "pm10", "no2", "o3"]
     missing_context = [p for p in required_context_pollutants if p not in feature_cols]
@@ -591,19 +700,21 @@ def train_for_pollutant(
             f"{missing_context}. Found features={feature_cols}"
         )
 
-    expected_target = f"target_{pollutant}_h{horizon}"
-    if len(target_cols) != 1 or target_cols[0] != expected_target:
+    expected_target = raw_target_col
+    if len(target_cols) != 1:
         raise ValueError(
             "Single-target contract violated: "
-            f"expected target_cols=['{expected_target}'], got {target_cols}"
+            f"expected one target column, got {target_cols}"
         )
 
     logger.info(
-        "[%s h%d] input-target contract: inputs include all pollutants=%s, target=%s",
+        "[%s h%d] input-target contract: inputs include all pollutants=%s, target=%s training_target=%s mode=%s",
         pollutant,
         horizon,
         required_context_pollutants,
         expected_target,
+        target_cols[0],
+        target_mode,
     )
 
     horizons = [horizon]
@@ -616,7 +727,7 @@ def train_for_pollutant(
     }
 
     train_ds = RegionSequenceDataset(
-        split_tables.train,
+        train_df_local,
         feature_columns=feature_cols,
         target_columns=target_cols,
         region_weights=region_weights,
@@ -625,7 +736,7 @@ def train_for_pollutant(
         max_samples=max_train_samples,
     )
     val_ds = RegionSequenceDataset(
-        split_tables.val,
+        val_df_local,
         feature_columns=feature_cols,
         target_columns=target_cols,
         region_weights=region_weights,
@@ -634,7 +745,7 @@ def train_for_pollutant(
         max_samples=max_val_samples,
     )
     test_ds = RegionSequenceDataset(
-        split_tables.test,
+        test_df_local,
         feature_columns=feature_cols,
         target_columns=target_cols,
         region_weights=region_weights,
@@ -846,17 +957,53 @@ def train_for_pollutant(
     )
     region_name_by_id = {int(v): str(k) for k, v in region_mapping.items()}
 
+    eval_val_pred = val_pred
+    eval_val_tgt = val_tgt
+    eval_test_pred = test_pred
+    eval_test_tgt = test_tgt
+
+    if target_mode == "delta_ma3":
+        if baseline_col is None:
+            raise ValueError("baseline_col missing for delta target mode")
+
+        val_baseline = _extract_record_values(
+            val_df_local,
+            column=baseline_col,
+            records=val_ds.records,
+        )
+        test_baseline = _extract_record_values(
+            test_df_local,
+            column=baseline_col,
+            records=test_ds.records,
+        )
+
+        val_level_tgt = _extract_record_values(
+            val_df_local,
+            column=raw_target_col,
+            records=val_ds.records,
+        )
+        test_level_tgt = _extract_record_values(
+            test_df_local,
+            column=raw_target_col,
+            records=test_ds.records,
+        )
+
+        eval_val_pred = val_pred + val_baseline[:, None, None]
+        eval_test_pred = test_pred + test_baseline[:, None, None]
+        eval_val_tgt = val_level_tgt.reshape(-1, 1)
+        eval_test_tgt = test_level_tgt.reshape(-1, 1)
+
     val_metrics = compute_quantile_metrics(
-        val_pred,
-        val_tgt,
+        eval_val_pred,
+        eval_val_tgt,
         horizons=horizons,
         quantiles=QUANTILES,
         region_ids=val_regions,
         region_name_by_id=region_name_by_id,
     )
     test_metrics = compute_quantile_metrics(
-        test_pred,
-        test_tgt,
+        eval_test_pred,
+        eval_test_tgt,
         horizons=horizons,
         quantiles=QUANTILES,
         region_ids=test_regions,
@@ -866,8 +1013,8 @@ def train_for_pollutant(
     prediction_path = MODELS_DIR / f"lstm_predictions_{pollutant}_h{horizon}.npz"
     np.savez_compressed(
         prediction_path,
-        predictions=test_pred.astype(np.float32),
-        targets=test_tgt.astype(np.float32),
+        predictions=eval_test_pred.astype(np.float32),
+        targets=eval_test_tgt.astype(np.float32),
         regions=test_regions.astype(np.int64),
         horizons=np.asarray(horizons, dtype=np.int64),
         quantiles=np.asarray(QUANTILES, dtype=np.float32),
@@ -878,7 +1025,12 @@ def train_for_pollutant(
         {
             "state_dict": model.state_dict(),
             "feature_columns": feature_cols,
-            "target_columns": target_cols,
+            "target_columns": [raw_target_col],
+            "training_target_columns": target_cols,
+            "target_mode": target_mode,
+            "delta_baseline_window": (
+                int(delta_baseline_window) if target_mode == "delta_ma3" else None
+            ),
             "horizons": horizons,
             "seq_len": int(seq_len),
             "quantiles": QUANTILES,
@@ -919,6 +1071,10 @@ def train_for_pollutant(
         "pollutant": pollutant,
         "horizon": int(horizon),
         "seq_len": int(seq_len),
+        "target_mode": target_mode,
+        "delta_baseline_window": (
+            int(delta_baseline_window) if target_mode == "delta_ma3" else None
+        ),
         "model_path": str(model_path),
         "best_epoch": int(best_epoch),
         "best_val_loss": float(best_val),
@@ -1060,6 +1216,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-val-samples", type=int, default=None)
     parser.add_argument("--max-test-samples", type=int, default=None)
     parser.add_argument(
+        "--target-mode",
+        type=str,
+        choices=["level", "delta_ma3"],
+        default="level",
+        help=(
+            "Training target mode: 'level' predicts raw target value; "
+            "'delta_ma3' predicts y(t+h)-MA3(y_t) and reconstructs levels for metrics"
+        ),
+    )
+    parser.add_argument(
+        "--delta-baseline-window",
+        type=int,
+        default=3,
+        help="Trailing moving-average window for delta target baseline when --target-mode=delta_ma3",
+    )
+    parser.add_argument(
         "--summary-path",
         type=str,
         default=str(MODELS_DIR / "lstm_training_summary.json"),
@@ -1106,6 +1278,8 @@ def main() -> None:
         "random_seed": RANDOM_SEED,
         "device": str(device),
         "training_mode": "separated_horizon_models",
+        "target_mode": args.target_mode,
+        "delta_baseline_window": int(args.delta_baseline_window),
         "horizons": horizons,
         "seq_len_by_horizon": {f"h{h}": int(seq_len_by_horizon[h]) for h in horizons},
         "quantiles": QUANTILES,
@@ -1143,6 +1317,8 @@ def main() -> None:
                 split_tables=split_tables,
                 horizon=horizon,
                 seq_len=seq_len,
+                target_mode=args.target_mode,
+                delta_baseline_window=args.delta_baseline_window,
                 min_attn_window=args.min_attn_window,
                 epochs=args.epochs,
                 batch_size=args.batch_size,

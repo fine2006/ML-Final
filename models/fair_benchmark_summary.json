@@ -1,0 +1,92 @@
+{
+  "created_at": "2026-04-19T12:19:49.268425",
+  "pollutants_requested": [
+    "no2"
+  ],
+  "horizons_requested": [
+    168
+  ],
+  "rows": [
+    {
+      "pollutant": "no2",
+      "horizon": 168,
+      "n_common": 15909,
+      "mean_concentration": 17.38568687438965,
+      "lstm_rmse": 17.22827283884736,
+      "xgb_rmse": 14.026090561188605,
+      "lstm_r2": 0.05005592107772827,
+      "xgb_r2": 0.3703664541244507,
+      "lstm_rmse_over_mean": 0.9909457683967511,
+      "xgb_rmse_over_mean": 0.8067607948150747,
+      "rmse_improvement_pct": -22.830183961020957,
+      "lstm_crps": 15.501321792602539,
+      "xgb_crps": 18.99213981628418,
+      "crps_improvement_pct": 18.38033027057096,
+      "lstm_coverage": 0.6021748695706832,
+      "xgb_coverage": 0.8799421710981206,
+      "lstm_pit_ks": 0.26048147678375244,
+      "xgb_pit_ks": 0.20055997371673584,
+      "lstm_pit_pvalue": 0.0,
+      "xgb_pit_pvalue": 0.0,
+      "persistence_rmse_raw_yt": 13.79777632779271,
+      "climatology_rmse_month_hour": 19.27641802171884,
+      "beats_persistence": false,
+      "beats_climatology": true,
+      "lstm_fairness_ratio": 4.036846988790393,
+      "xgb_fairness_ratio": 3.652039127245829,
+      "tag": ""
+    }
+  ],
+  "operational_gates": {
+    "definition": {
+      "pm_production": {
+        "rmse_over_mean_lt": 0.5,
+        "r2_gt": 0.3
+      },
+      "gas_rescue": {
+        "rmse_over_mean_lt": 0.8,
+        "must_beat": "raw_persistence_y_t"
+      }
+    },
+    "baseline_notes": {
+      "persistence": "raw_y_t_from_xgb_input_current_pollutant",
+      "climatology": "train_split_mean_by_month_hour"
+    },
+    "rows": [
+      {
+        "pollutant": "no2",
+        "horizon": 168,
+        "n_common": 15909,
+        "mean_concentration": 17.38568687438965,
+        "lstm_rmse": 17.22827283884736,
+        "xgb_rmse": 14.026090561188605,
+        "lstm_r2": 0.05005592107772827,
+        "xgb_r2": 0.3703664541244507,
+        "lstm_rmse_over_mean": 0.9909457683967511,
+        "xgb_rmse_over_mean": 0.8067607948150747,
+        "rmse_improvement_pct": -22.830183961020957,
+        "lstm_crps": 15.501321792602539,
+        "xgb_crps": 18.99213981628418,
+        "crps_improvement_pct": 18.38033027057096,
+        "lstm_coverage": 0.6021748695706832,
+        "xgb_coverage": 0.8799421710981206,
+        "lstm_pit_ks": 0.26048147678375244,
+        "xgb_pit_ks": 0.20055997371673584,
+        "lstm_pit_pvalue": 0.0,
+        "xgb_pit_pvalue": 0.0,
+        "persistence_rmse_raw_yt": 13.79777632779271,
+        "climatology_rmse_month_hour": 19.27641802171884,
+        "beats_persistence": false,
+        "beats_climatology": true,
+        "lstm_fairness_ratio": 4.036846988790393,
+        "xgb_fairness_ratio": 3.652039127245829,
+        "tag": "",
+        "gate_label": "gas_rescue",
+        "gate_pass": false,
+        "coverage_target_90_abs_err": 0.2978251304293168,
+        "lstm_pit_shape": "u_shaped_underconfident",
+        "xgb_pit_shape": "deviated"
+      }
+    ]
+  }
+}

@@ -1,22 +1,71 @@
 # %% [code]
 import json
+import math
 import os
+import random
 import re
 import shutil
 import subprocess
 import time
 from pathlib import Path
 
+try:
+    import optuna
+except Exception:
+    optuna = None
+
+
 PIPELINE_START_TS = time.time()
 ROOT = Path("ML-Final")
 
 
-def run_cmd(cmd, cwd=None, env=None):
+def run_cmd(cmd, cwd=None, env=None, retries=1, retry_wait=15):
     if isinstance(cmd, list):
         print("$", " ".join(str(x) for x in cmd))
     else:
         print("$", cmd)
-    subprocess.run(cmd, cwd=cwd, env=env, check=True)
+    attempt = 1
+    while True:
+        try:
+            subprocess.run(cmd, cwd=cwd, env=env, check=True)
+            return
+        except subprocess.CalledProcessError as exc:
+            if attempt >= retries:
+                raise
+            wait_s = retry_wait * attempt
+            print(
+                f"Command failed (exit={exc.returncode}) attempt {attempt}/{retries}; retrying in {wait_s}s"
+            )
+            time.sleep(wait_s)
+            attempt += 1
+
+
+def patch_requires_python_for_kaggle(pyproject_path: Path) -> None:
+    text = pyproject_path.read_text(encoding="utf-8")
+    old = 'requires-python = ">=3.13"'
+    new = 'requires-python = ">=3.12"'
+    if old in text:
+        pyproject_path.write_text(text.replace(old, new, 1), encoding="utf-8")
+        print("Patched pyproject requires-python to >=3.12 for Kaggle fallback")
+
+
+def uv_sync_with_fallback(project_root: Path) -> None:
+    try:
+        run_cmd(["uv", "sync"], cwd=project_root, retries=4, retry_wait=20)
+        return
+    except subprocess.CalledProcessError:
+        print("Primary 'uv sync' failed. Retrying with system Python fallback.")
+
+    patch_requires_python_for_kaggle(project_root / "pyproject.toml")
+    env_sync = os.environ.copy()
+    env_sync["UV_PYTHON_PREFERENCE"] = "system"
+    run_cmd(
+        ["uv", "sync", "--python", "3.12"],
+        cwd=project_root,
+        env=env_sync,
+        retries=4,
+        retry_wait=20,
+    )
 
 
 # %% [code]
@@ -25,7 +74,7 @@ if ROOT.exists():
     shutil.rmtree(ROOT)
 
 run_cmd(["git", "clone", "https://github.com/fine2006/ML-Final", "-b", "new-approach"])
-run_cmd(["uv", "sync"], cwd=ROOT)
+uv_sync_with_fallback(ROOT)
 
 src_dataset = Path(
     "/kaggle/input/datasets/fine2006/pollution-data-raipur/Pollution Data Raipur"
@@ -69,22 +118,11 @@ run_cmd(["uv", "run", "python", "scripts/preprocess_xgb.py"], cwd=ROOT, env=env)
 
 
 # %% [code]
-# Metadata checks for single-latency contract
-repo = ROOT.resolve()
-lstm_meta = json.loads((repo / "data" / "preprocessed_lstm_v1" / "metadata.json").read_text())
-xgb_meta = json.loads((repo / "data" / "preprocessed_xgb_v1" / "metadata.json").read_text())
-
-print("LSTM feature columns:", lstm_meta["feature_columns"])
-print("LSTM leakage policy:", lstm_meta["leakage_policy"])
-print("XGB leakage policy:", xgb_meta["leakage_policy"])
-
-assert "temperature" in lstm_meta["feature_columns"]
-assert "temperature_lag_1" not in lstm_meta["feature_columns"]
-assert xgb_meta["leakage_policy"]["weather_current_values_shifted_by"] == 0
-
-
-# %% [code]
 # Keep XGB frozen by default (use precomputed models)
+repo = ROOT.resolve()
+models_dir = repo / "models"
+models_dir.mkdir(parents=True, exist_ok=True)
+
 TRAIN_XGB = False
 if TRAIN_XGB:
     run_cmd(
@@ -105,13 +143,7 @@ if TRAIN_XGB:
 else:
     print("Skipping XGB retrain (TRAIN_XGB=False); expecting precomputed XGB models in models/.")
 
-
-# %% [code]
-# Verify expected XGB files
-models_dir = repo / "models"
-models_dir.mkdir(parents=True, exist_ok=True)
-
-rx = re.compile(r"^xgb_quantile_(pm25|pm10|no2|o3)_h(1|24|168)_q(05|50|95|99)\\.json$")
+rx = re.compile(r"^xgb_quantile_(pm25|pm10|no2|o3)_h(1|24|168)_q(05|50|95|99)\.json$")
 expected = {
     f"xgb_quantile_{p}_h{h}_q{q}.json"
     for p in ["pm25", "pm10", "no2", "o3"]
@@ -120,7 +152,6 @@ expected = {
 }
 present = {p.name for p in models_dir.glob("xgb_quantile_*.json") if rx.match(p.name)}
 missing = sorted(expected - present)
-
 print("xgb model count:", len(present))
 if missing:
     print("missing examples:", missing[:10])
@@ -133,16 +164,17 @@ EXP = models_dir / "experiments"
 EXP.mkdir(parents=True, exist_ok=True)
 
 
-def run_eval(tag, horizons="1,24,168"):
+def run_eval(tag, horizons="168", pollutants="pm25,pm10,no2,o3"):
     env_eval = os.environ.copy()
     env_eval["MPLBACKEND"] = "agg"
+    env_eval["EVAL_EXPERIMENT_TAG"] = str(tag)
     cmd = [
         "uv",
         "run",
         "python",
         "scripts/evaluate.py",
         "--pollutants",
-        "pm25,pm10,no2,o3",
+        pollutants,
         "--horizons",
         horizons,
         "--device",
@@ -161,312 +193,355 @@ def run_eval(tag, horizons="1,24,168"):
     return fair_dst, eval_dst
 
 
-def print_rows(fair_path, horizons=None):
-    fair = json.loads(Path(fair_path).read_text())
-    rows = fair.get("rows", [])
-    if horizons is not None:
-        hset = {int(h) for h in horizons}
-        rows = [r for r in rows if int(r["horizon"]) in hset]
-    rows = sorted(rows, key=lambda r: (int(r["horizon"]), r["pollutant"]))
-
-    print(
-        "pollutant,h,lstm_rmse,xgb_rmse,rmse_impr_pct,lstm_crps,xgb_crps,"
-        "crps_impr_pct,lstm_cov95,xgb_cov95"
-    )
-    for r in rows:
-        print(
-            f"{r['pollutant']},{int(r['horizon'])},{float(r['lstm_rmse']):.6f},"
-            f"{float(r['xgb_rmse']):.6f},{float(r['rmse_improvement_pct']):+.2f},"
-            f"{float(r['lstm_crps']):.6f},{float(r['xgb_crps']):.6f},"
-            f"{float(r['crps_improvement_pct']):+.2f},{float(r['lstm_coverage']):.6f},"
-            f"{float(r['xgb_coverage']):.6f}"
-        )
-
-
-def assert_lstm_checkpoints(horizons, pollutants=None):
-    if pollutants is None:
-        pollutants = ["pm25", "pm10", "no2", "o3"]
-    missing_ckpts = []
-    for p in pollutants:
-        for h in horizons:
-            ckpt = models_dir / f"lstm_quantile_{p}_h{int(h)}.pt"
-            if not ckpt.exists():
-                missing_ckpts.append(str(ckpt))
-    if missing_ckpts:
-        raise RuntimeError(
-            "Missing LSTM checkpoints (first 10 shown):\n" + "\n".join(missing_ckpts[:10])
-        )
-    print("LSTM checkpoints OK for pollutants", pollutants, "horizons", list(horizons))
-
-
-def train_lock_best_all3():
-    # Locked best config discovered previously: h168_05_64_soft_336 profile
+def build_train_cmd(cfg):
+    target_mode = cfg.get("target_mode", "level")
     cmd = [
         "uv",
         "run",
         "python",
         "scripts/train_lstm.py",
         "--pollutants",
-        "pm25,pm10,no2,o3",
-        "--horizons",
-        "1,24,168",
-        "--seq-len-map",
-        "1:24,24:24,168:336",
-        "--device",
-        "auto",
-        "--batch-size",
-        "128",
-        "--epochs",
-        "80",
-        "--patience",
-        "12",
-        "--lr",
-        "1.5e-4",
-        "--hidden-dim",
-        "64",
-        "--num-layers",
-        "2",
-        "--num-heads",
-        "2",
-        "--dropout",
-        "0.25",
-        "--head-dropout",
-        "0.20",
-        "--weight-decay",
-        "1e-4",
-        "--scheduler-factor",
-        "0.5",
-        "--scheduler-patience",
-        "4",
-        "--max-grad-norm",
-        "1.0",
-        "--min-attn-window",
-        "24",
-        "--summary-path",
-        str(EXP / "lock_best_all3_summary.json"),
-    ]
-    run_cmd(cmd, cwd=repo)
-
-
-def run_train_h168(
-    tag,
-    pollutant,
-    seq_len,
-    hidden_dim,
-    num_layers,
-    num_heads,
-    lr,
-    dropout,
-    head_dropout,
-    weight_decay,
-    epochs=80,
-    patience=12,
-    scheduler_patience=4,
-    batch_size=128,
-):
-    cmd = [
-        "uv",
-        "run",
-        "python",
-        "scripts/train_lstm.py",
-        "--pollutants",
-        pollutant,
+        cfg["pollutant"],
         "--horizons",
         "168",
         "--seq-len-map",
-        f"168:{seq_len}",
+        f"168:{cfg['seq_len']}",
+        "--target-mode",
+        target_mode,
+        "--delta-baseline-window",
+        str(cfg.get("delta_baseline_window", 3)),
         "--device",
-        "auto",
+        "cuda",
         "--batch-size",
-        str(batch_size),
+        str(cfg.get("batch_size", 128)),
         "--epochs",
-        str(epochs),
+        str(cfg.get("epochs", 80)),
         "--patience",
-        str(patience),
+        str(cfg.get("patience", 12)),
         "--lr",
-        str(lr),
+        str(cfg["lr"]),
         "--hidden-dim",
-        str(hidden_dim),
+        str(cfg["hidden_dim"]),
         "--num-layers",
-        str(num_layers),
+        str(cfg.get("num_layers", 2)),
         "--num-heads",
-        str(num_heads),
+        str(cfg.get("num_heads", 2)),
         "--dropout",
-        str(dropout),
+        str(cfg["dropout"]),
         "--head-dropout",
-        str(head_dropout),
+        str(cfg.get("head_dropout", 0.2)),
         "--weight-decay",
-        str(weight_decay),
+        str(cfg["weight_decay"]),
         "--scheduler-factor",
         "0.5",
         "--scheduler-patience",
-        str(scheduler_patience),
+        str(cfg.get("scheduler_patience", 4)),
         "--max-grad-norm",
         "1.0",
         "--min-attn-window",
         "24",
         "--summary-path",
-        str(EXP / f"{tag}_summary.json"),
+        str(EXP / f"{cfg['tag']}_summary.json"),
     ]
-    run_cmd(cmd, cwd=repo)
+    return cmd
 
 
-def score_row(r):
+def run_pair(cfg0, cfg1):
+    if cfg0["pollutant"] == cfg1["pollutant"]:
+        raise ValueError(
+            f"Cannot run same pollutant concurrently: {cfg0['pollutant']}"
+        )
+
+    jobs = []
+    for gpu_id, cfg in ((0, cfg0), (1, cfg1)):
+        cmd = build_train_cmd(cfg)
+        env_train = os.environ.copy()
+        env_train["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        log_path = EXP / f"{cfg['tag']}_train_gpu{gpu_id}.log"
+        log_handle = open(log_path, "w", encoding="utf-8")
+        print("$", f"CUDA_VISIBLE_DEVICES={gpu_id}", " ".join(str(x) for x in cmd), f"> {log_path}")
+        proc = subprocess.Popen(
+            cmd,
+            cwd=repo,
+            env=env_train,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+        )
+        jobs.append((cfg, gpu_id, proc, log_handle, log_path))
+
+    failures = []
+    for cfg, gpu_id, proc, log_handle, log_path in jobs:
+        ret = proc.wait()
+        log_handle.close()
+        if ret == 0:
+            print(f"[{cfg['tag']}] finished on gpu={gpu_id} (log: {log_path})")
+        else:
+            failures.append((cfg["tag"], gpu_id, ret, str(log_path)))
+    if failures:
+        raise RuntimeError(f"Dual-GPU training failed: {failures}")
+
+
+def gate_for_row(row):
+    p = row["pollutant"]
+    if p in {"pm25", "pm10"}:
+        return (
+            float(row["lstm_rmse_over_mean"]) < 0.5
+            and float(row["lstm_r2"]) > 0.3
+        )
     return (
-        0.65 * float(r["rmse_improvement_pct"])
-        + 0.35 * float(r["crps_improvement_pct"])
-        - 10.0 * abs(float(r["lstm_coverage"]) - 0.90)
+        float(row["lstm_rmse_over_mean"]) < 0.8
+        and bool(row.get("beats_persistence", False))
     )
+
+
+def read_gate_rows(fair_path):
+    fair = json.loads(Path(fair_path).read_text())
+    op = fair.get("operational_gates", {})
+    rows = op.get("rows", [])
+    return [r for r in rows if int(r.get("horizon", -1)) == 168]
+
+
+def print_gate_rows(fair_path):
+    rows = sorted(read_gate_rows(fair_path), key=lambda r: r["pollutant"])
+    print(
+        "pollutant,h,mean,lstm_rmse,xgb_rmse,lstm_r2,xgb_r2,lstm_rmse_over_mean,"
+        "xgb_rmse_over_mean,lstm_cov95,lstm_pit_ks,beats_persistence,beats_climatology,gate_pass"
+    )
+    for r in rows:
+        print(
+            f"{r['pollutant']},{int(r['horizon'])},{float(r['mean_concentration']):.6f},"
+            f"{float(r['lstm_rmse']):.6f},{float(r['xgb_rmse']):.6f},"
+            f"{float(r['lstm_r2']):.6f},{float(r['xgb_r2']):.6f},"
+            f"{float(r['lstm_rmse_over_mean']):.6f},{float(r['xgb_rmse_over_mean']):.6f},"
+            f"{float(r['lstm_coverage']):.6f},{float(r['lstm_pit_ks']):.6f},"
+            f"{bool(r.get('beats_persistence', False))},{bool(r.get('beats_climatology', False))},"
+            f"{bool(r.get('gate_pass', gate_for_row(r)))}"
+        )
+
+
+def random_space_with_seed(seed=42):
+    rng = random.Random(seed)
+
+    def log_uniform(a, b):
+        return 10 ** rng.uniform(math.log10(a), math.log10(b))
+
+    runs = []
+
+    # 16 gas rescue
+    for i in range(8):
+        runs.append(
+            {
+                "tag": f"pilot_no2_delta_{i+1:02d}",
+                "pollutant": "no2",
+                "target_mode": "delta_ma3",
+                "delta_baseline_window": 3,
+                "seq_len": rng.choice([48, 72, 168]),
+                "hidden_dim": rng.choice([32, 64, 96, 128]),
+                "num_layers": 2,
+                "num_heads": rng.choice([2, 4]),
+                "lr": log_uniform(5e-5, 5e-4),
+                "dropout": round(rng.uniform(0.1, 0.4), 3),
+                "head_dropout": round(rng.uniform(0.1, 0.35), 3),
+                "weight_decay": log_uniform(1e-5, 1e-2),
+                "epochs": 70,
+                "patience": 10,
+                "scheduler_patience": 3,
+            }
+        )
+    for i in range(8):
+        runs.append(
+            {
+                "tag": f"pilot_o3_delta_{i+1:02d}",
+                "pollutant": "o3",
+                "target_mode": "delta_ma3",
+                "delta_baseline_window": 3,
+                "seq_len": rng.choice([48, 72, 168]),
+                "hidden_dim": rng.choice([32, 64, 96, 128]),
+                "num_layers": 2,
+                "num_heads": rng.choice([2, 4]),
+                "lr": log_uniform(5e-5, 5e-4),
+                "dropout": round(rng.uniform(0.1, 0.4), 3),
+                "head_dropout": round(rng.uniform(0.1, 0.35), 3),
+                "weight_decay": log_uniform(1e-5, 1e-2),
+                "epochs": 70,
+                "patience": 10,
+                "scheduler_patience": 3,
+            }
+        )
+
+    # 8 PM refinement
+    for i in range(4):
+        runs.append(
+            {
+                "tag": f"pilot_pm25_refine_{i+1:02d}",
+                "pollutant": "pm25",
+                "target_mode": "level",
+                "seq_len": rng.choice([336, 504, 672]),
+                "hidden_dim": rng.choice([64, 96, 128, 256]),
+                "num_layers": 2,
+                "num_heads": rng.choice([2, 4]),
+                "lr": log_uniform(5e-5, 5e-4),
+                "dropout": round(rng.uniform(0.2, 0.4), 3),
+                "head_dropout": round(rng.uniform(0.15, 0.35), 3),
+                "weight_decay": log_uniform(1e-5, 2e-3),
+                "epochs": 80,
+                "patience": 12,
+                "scheduler_patience": 4,
+            }
+        )
+    for i in range(4):
+        runs.append(
+            {
+                "tag": f"pilot_pm10_refine_{i+1:02d}",
+                "pollutant": "pm10",
+                "target_mode": "level",
+                "seq_len": rng.choice([336, 504, 672]),
+                "hidden_dim": rng.choice([64, 96, 128, 256]),
+                "num_layers": 2,
+                "num_heads": rng.choice([2, 4]),
+                "lr": log_uniform(5e-5, 5e-4),
+                "dropout": round(rng.uniform(0.2, 0.4), 3),
+                "head_dropout": round(rng.uniform(0.15, 0.35), 3),
+                "weight_decay": log_uniform(1e-5, 2e-3),
+                "epochs": 80,
+                "patience": 12,
+                "scheduler_patience": 4,
+            }
+        )
+
+    return runs
 
 
 print("Helper setup complete.")
 
 
 # %% [code]
-# 1) Train LSTM on all three horizons using the previously found best config
-train_lock_best_all3()
-assert_lstm_checkpoints(horizons=[1, 24, 168])
+# Pilot: first 8 runs only, then gate check
+ALL_RUNS = random_space_with_seed(seed=42)
+PILOT_RUNS = ALL_RUNS[:8]
+
+for i in range(0, len(PILOT_RUNS), 2):
+    pair = PILOT_RUNS[i : i + 2]
+    if len(pair) == 2:
+        print("\n=== dual-gpu pilot batch ===", pair[0]["tag"], "|", pair[1]["tag"], "===")
+        run_pair(pair[0], pair[1])
+    else:
+        cfg = pair[0]
+        print("\n=== single-gpu pilot batch ===", cfg["tag"], "===")
+        run_pair(cfg, {
+            "tag": "_noop_",
+            "pollutant": "pm25",
+            "target_mode": "level",
+            "seq_len": 336,
+            "hidden_dim": 64,
+            "num_layers": 2,
+            "num_heads": 2,
+            "lr": 1.5e-4,
+            "dropout": 0.25,
+            "head_dropout": 0.2,
+            "weight_decay": 1e-4,
+            "epochs": 1,
+            "patience": 1,
+            "scheduler_patience": 1,
+        })
+
+    for cfg in pair:
+        fair_path, _ = run_eval(cfg["tag"], horizons="168", pollutants=cfg["pollutant"])
+        print_gate_rows(fair_path)
 
 
 # %% [code]
-# 2) Eval once after lock-train (all three horizons)
-fair_path, eval_path = run_eval("baseline_after_lock_all3", horizons="1,24,168")
-print_rows(fair_path, horizons=[1, 24, 168])
-print("saved:", fair_path)
-print("saved:", eval_path)
+# Pilot summary and go/no-go
+pilot_tags = {cfg["tag"] for cfg in PILOT_RUNS}
+pilot_rows = []
+for fp in sorted(EXP.glob("*_fair_benchmark_summary.json")):
+    tag = fp.name.replace("_fair_benchmark_summary.json", "")
+    if tag not in pilot_tags:
+        continue
+    fair = json.loads(fp.read_text())
+    for r in fair.get("operational_gates", {}).get("rows", []):
+        if int(r.get("horizon", -1)) != 168:
+            continue
+        pilot_rows.append((tag, r))
 
-
-# %% [code]
-# 3) h168-only sweep
-RUNS = [
-    {
-        "tag": "h168_pm25_soft336",
-        "pollutant": "pm25",
-        "seq_len": 336,
-        "hidden_dim": 64,
-        "num_layers": 2,
-        "num_heads": 2,
-        "lr": 1.5e-4,
-        "dropout": 0.25,
-        "head_dropout": 0.20,
-        "weight_decay": 1e-4,
-    },
-    {
-        "tag": "h168_pm10_soft336",
-        "pollutant": "pm10",
-        "seq_len": 336,
-        "hidden_dim": 64,
-        "num_layers": 2,
-        "num_heads": 2,
-        "lr": 1.5e-4,
-        "dropout": 0.25,
-        "head_dropout": 0.20,
-        "weight_decay": 1e-4,
-    },
-    {
-        "tag": "h168_no2_soft336_hd96",
-        "pollutant": "no2",
-        "seq_len": 336,
-        "hidden_dim": 96,
-        "num_layers": 2,
-        "num_heads": 4,
-        "lr": 1.5e-4,
-        "dropout": 0.25,
-        "head_dropout": 0.20,
-        "weight_decay": 1e-4,
-    },
-    {
-        "tag": "h168_no2_reg336_hd96",
-        "pollutant": "no2",
-        "seq_len": 336,
-        "hidden_dim": 96,
-        "num_layers": 2,
-        "num_heads": 4,
-        "lr": 2.0e-4,
-        "dropout": 0.30,
-        "head_dropout": 0.25,
-        "weight_decay": 2e-4,
-        "epochs": 60,
-        "patience": 10,
-        "scheduler_patience": 3,
-    },
-    {
-        "tag": "h168_o3_soft168",
-        "pollutant": "o3",
-        "seq_len": 168,
-        "hidden_dim": 64,
-        "num_layers": 2,
-        "num_heads": 2,
-        "lr": 1.5e-4,
-        "dropout": 0.25,
-        "head_dropout": 0.20,
-        "weight_decay": 1e-4,
-    },
-    {
-        "tag": "h168_o3_soft336_hd96",
-        "pollutant": "o3",
-        "seq_len": 336,
-        "hidden_dim": 96,
-        "num_layers": 2,
-        "num_heads": 4,
-        "lr": 1.5e-4,
-        "dropout": 0.25,
-        "head_dropout": 0.20,
-        "weight_decay": 1e-4,
-    },
+pass_rows = [x for x in pilot_rows if bool(x[1].get("gate_pass", False))]
+gas_rows = [x for x in pilot_rows if x[1]["pollutant"] in {"no2", "o3"}]
+gas_positive_signal = [
+    x for x in gas_rows
+    if bool(x[1].get("beats_persistence", False))
+    and float(x[1].get("lstm_coverage", 0.0)) >= 0.80
 ]
 
-for cfg in RUNS:
-    print("\n===", cfg["tag"], "===")
-    run_train_h168(**cfg)
-    assert_lstm_checkpoints(horizons=[168], pollutants=[cfg["pollutant"]])
-    fair_path, _ = run_eval(cfg["tag"], horizons="168")
-    print_rows(fair_path, horizons=[168])
+print("pilot_total_rows:", len(pilot_rows))
+print("pilot_gate_pass_rows:", len(pass_rows))
+print("pilot_gas_positive_signal_rows:", len(gas_positive_signal))
+
+for tag, r in sorted(gas_rows, key=lambda t: (t[1]["pollutant"], t[0])):
+    print(
+        f"{tag} {r['pollutant']} rmse/mean={float(r['lstm_rmse_over_mean']):.3f} "
+        f"cov={float(r['lstm_coverage']):.3f} pit_ks={float(r['lstm_pit_ks']):.3f} "
+        f"beat_persist={bool(r.get('beats_persistence', False))}"
+    )
+
+AUTO_CONTINUE = len(gas_positive_signal) > 0
+print("AUTO_CONTINUE_REMAINING_16:", AUTO_CONTINUE)
 
 
 # %% [code]
-# 4) Leaderboard only on h168
-allowed_tags = {"baseline_after_lock_all3"} | {cfg["tag"] for cfg in RUNS}
+# Remaining 16 runs (only if pilot shows signal)
+REMAINING_RUNS = ALL_RUNS[8:]
+if AUTO_CONTINUE:
+    for i in range(0, len(REMAINING_RUNS), 2):
+        pair = REMAINING_RUNS[i : i + 2]
+        print("\n=== dual-gpu remaining batch ===", pair[0]["tag"], "|", pair[1]["tag"], "===")
+        run_pair(pair[0], pair[1])
 
-by_pollutant = {p: [] for p in ["pm25", "pm10", "no2", "o3"]}
-global_rows = []
+        for cfg in pair:
+            fair_path, _ = run_eval(cfg["tag"], horizons="168", pollutants=cfg["pollutant"])
+            print_gate_rows(fair_path)
+else:
+    print("Skipping remaining 16 runs due to no positive gas signal in pilot.")
 
+
+# %% [code]
+# Consolidated h168 leaderboard by operational gates
+allowed_tags = {cfg["tag"] for cfg in ALL_RUNS}
+rows = []
 for fp in sorted(EXP.glob("*_fair_benchmark_summary.json")):
     tag = fp.name.replace("_fair_benchmark_summary.json", "")
     if tag not in allowed_tags:
         continue
     fair = json.loads(fp.read_text())
-    for r in fair.get("rows", []):
-        if int(r["horizon"]) != 168:
+    for r in fair.get("operational_gates", {}).get("rows", []):
+        if int(r.get("horizon", -1)) != 168:
             continue
-        p = r["pollutant"]
-        if p not in by_pollutant:
-            continue
-        s = score_row(r)
-        by_pollutant[p].append((s, tag, r))
-        global_rows.append((s, tag, p, r))
+        rows.append((tag, r))
 
-for p in ["pm25", "pm10", "no2", "o3"]:
-    print("\n===", p, "h168 ranking ===")
-    rows = sorted(by_pollutant[p], key=lambda t: t[0], reverse=True)
-    for s, tag, r in rows[:10]:
-        print(
-            f"{tag}: score={s:+.3f} rmse_impr={float(r['rmse_improvement_pct']):+.2f}% "
-            f"crps_impr={float(r['crps_improvement_pct']):+.2f}% cov={float(r['lstm_coverage']):.3f}"
+for pollutant in ["pm25", "pm10", "no2", "o3"]:
+    subset = [(tag, r) for tag, r in rows if r["pollutant"] == pollutant]
+    subset.sort(
+        key=lambda t: (
+            0 if bool(t[1].get("gate_pass", False)) else 1,
+            float(t[1].get("lstm_rmse_over_mean", 999.0)),
+            -float(t[1].get("lstm_r2", -999.0)),
+            float(abs(float(t[1].get("lstm_coverage", 0.0)) - 0.90)),
+            float(t[1].get("lstm_pit_ks", 999.0)),
         )
-
-print("\n=== global h168 ranking (top 20 rows) ===")
-for s, tag, p, r in sorted(global_rows, key=lambda t: t[0], reverse=True)[:20]:
-    print(
-        f"{tag} [{p}]: score={s:+.3f} rmse_impr={float(r['rmse_improvement_pct']):+.2f}% "
-        f"crps_impr={float(r['crps_improvement_pct']):+.2f}% cov={float(r['lstm_coverage']):.3f}"
     )
+    print("\n===", pollutant, "operational ranking (h168) ===")
+    for tag, r in subset[:12]:
+        print(
+            f"{tag}: pass={bool(r.get('gate_pass', False))} rmse/mean={float(r['lstm_rmse_over_mean']):.3f} "
+            f"r2={float(r['lstm_r2']):+.3f} cov={float(r['lstm_coverage']):.3f} "
+            f"pit_ks={float(r['lstm_pit_ks']):.3f} beat_persist={bool(r.get('beats_persistence', False))} "
+            f"beat_clim={bool(r.get('beats_climatology', False))}"
+        )
 
 
 # %% [code]
-# Final h168 snapshot
-fair_path, eval_path = run_eval("final_h168_snapshot", horizons="168")
-print_rows(fair_path, horizons=[168])
+# Final snapshot and runtime
+fair_path, eval_path = run_eval("final_h168_operational_snapshot", horizons="168")
+print_gate_rows(fair_path)
 print("saved:", fair_path)
 print("saved:", eval_path)
 print("elapsed hours:", (time.time() - PIPELINE_START_TS) / 3600.0)

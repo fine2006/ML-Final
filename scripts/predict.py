@@ -225,6 +225,9 @@ def main() -> None:
     else:
         device = torch.device(args.device)
 
+    metadata = json.loads((data_dir / "metadata.json").read_text(encoding="utf-8"))
+    scaler_meta = metadata.get("scaler", {}) if isinstance(metadata, dict) else {}
+
     if args.input_csv.strip():
         df = pd.read_csv(args.input_csv, parse_dates=["timestamp"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce").dt.floor("h")
@@ -354,9 +357,30 @@ def main() -> None:
             float(q) for q in checkpoint.get("quantiles", [0.05, 0.50, 0.95, 0.99])
         ]
         q_values = pred[h_idx]
+        q_values_mono = np.maximum.accumulate(q_values)
+
+        target_mode = str(checkpoint.get("target_mode", "level"))
+        delta_baseline_window = int(checkpoint.get("delta_baseline_window", 3) or 3)
+        if target_mode == "delta_ma3":
+            if pollutant not in region_df.columns:
+                raise ValueError(
+                    f"Cannot reconstruct delta target for {pollutant}: missing feature column"
+                )
+
+            scaler = scaler_meta.get(pollutant, {}) if isinstance(scaler_meta, dict) else {}
+            median = float(scaler.get("median", 0.0))
+            iqr = float(scaler.get("iqr", 1.0))
+            if not np.isfinite(iqr) or abs(iqr) < 1e-8:
+                iqr = 1.0
+
+            raw_series = region_df[pollutant].astype(float) * iqr + median
+            start = max(0, pos - delta_baseline_window + 1)
+            baseline = float(raw_series.iloc[start : pos + 1].mean())
+            q_values_mono = q_values_mono + baseline
+
         q_map = {
             label_quantile(q): float(v)
-            for q, v in zip(q_levels, np.maximum.accumulate(q_values))
+            for q, v in zip(q_levels, q_values_mono)
         }
 
         p05 = q_map.get("p05")
@@ -371,6 +395,10 @@ def main() -> None:
             "model_path": str(model_path),
             "model_horizons": model_horizons,
             "seq_len": int(seq_len),
+            "target_mode": target_mode,
+            "delta_baseline_window": (
+                int(delta_baseline_window) if target_mode == "delta_ma3" else None
+            ),
         }
 
     out = {

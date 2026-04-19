@@ -571,6 +571,60 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 | **Evidence** | `uv run` smoke tests passed for `scripts/evaluate.py` and `scripts/predict.py` with legacy-to-raw remap logging enabled |
 | **Status** | ✓ APPROVED (implemented) |
 
+### Decision 4.26: h168 Tiered-Gate Rescue Strategy (Gas-First, PM-Refine)
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Continue uniform h168 sweep with single global score |
+| | (B) Tiered operational gates with pollutant-family-specific acceptance criteria |
+| **Chosen** | (B) Tiered operational gates |
+| **Rationale** | - Aggregate metrics show PM family is near-useful while gas family is underperforming (`RMSE/mean >= 1` in multiple gas runs) |
+| | - A single score can hide non-utility cases where `R2` is low/negative and uncertainty coverage is poor |
+| | - Production-style decisions require explicit pass/fail criteria by pollutant family |
+| **Implementation** | h168 sweep budget split fixed to 24 runs: 16 gas rescue (`no2`,`o3`) + 8 PM refinement (`pm25`,`pm10`) |
+| | Pilot-first schedule: run 8 configs, then continue remaining 16 only if gas signal is positive |
+| | Tiered gates: PM pass if `RMSE/mean < 0.5` and `R2 > 0.3`; Gas pass if `RMSE/mean < 0.8` and LSTM beats persistence baseline |
+| **Status** | ✓ APPROVED (implemented in runbook + evaluation outputs) |
+
+### Decision 4.27: Delta-Target Formulation for Gas h168 Rescue
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Keep level target for all pollutants |
+| | (B) Use delta target for gases only (`y(t+168)-baseline`) while keeping PM on level targets |
+| **Chosen** | (B) Gas-only delta target |
+| **Rationale** | - `no2/o3` show weak level-prediction utility at h168; delta target improves stationarity and trend learnability |
+| | - To reduce variance injection from local spikes, baseline is smoothed instead of raw single-point value |
+| **Implementation** | Added `train_lstm.py --target-mode {level,delta_ma3}` with `--delta-baseline-window` |
+| | Delta mode uses `target_delta = target_level - MA(window)` per region; metrics/predictions are reconstructed back to level space |
+| | Checkpoints now persist `target_mode`, `delta_baseline_window`, and `training_target_columns` |
+| **Status** | ✓ APPROVED (implemented) |
+
+### Decision 4.28: Baseline Policy for Gas Rescue Gates
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) Persistence baseline using smoothed baseline (`MA3(y_t)`) |
+| | (B) Persistence baseline using raw `y_t` (naive forecast) |
+| **Chosen** | (B) raw `y_t` persistence for hard gate |
+| **Rationale** | - Raw persistence is the standard naive benchmark in time-series forecasting |
+| | - Prevents evaluation leakage where the same smoothing used in target construction also lowers baseline difficulty |
+| | - Keeps gate rigorous: model must beat a simple raw carry-forward forecast |
+| **Implementation** | `evaluate.py` fair-intersection output now includes `persistence_rmse_raw_yt`, `beats_persistence` |
+| **Status** | ✓ APPROVED (implemented) |
+
+### Decision 4.29: Climatology Shadow Baseline (month, hour)
+
+| Aspect | Details |
+|--------|---------|
+| **Options** | (A) No climatology baseline |
+| | (B) Climatology by (`month`, `hour_of_day`) as shadow diagnostic |
+| **Chosen** | (B) include climatology shadow baseline |
+| **Rationale** | - At 7-day horizon, seasonal + diurnal mean behavior can be a strong competitor, especially for gases |
+| | - A model that beats persistence but fails climatology may still be over-extrapolating local noise |
+| **Implementation** | `evaluate.py` computes train-split climatology map by (`month`,`hour`) and reports `climatology_rmse_month_hour`, `beats_climatology` |
+| **Status** | ✓ APPROVED (implemented) |
+
 ---
 
 ## 5. Evaluation Framework
@@ -862,6 +916,10 @@ Region weights for training (calculated):
 | 4.14 | Horizon scope | h1/h24/h168 | ✓ APPROVED | 5 | Replaced h672 |
 | 4.15 | Quantile calibration | Both LSTM + XGB | ✓ APPROVED | 6 | Validation bias calibration |
 | 4.16 | Interval priority | 95% CI focus | ✓ APPROVED | 6 | p05-p95 primary KPI |
+| 4.26 | h168 gate strategy | Tiered PM/Gas gates | ✓ APPROVED | 6 | 24-run split: 16 gas + 8 PM |
+| 4.27 | Gas target mode | Delta MA3 (gas only) | ✓ APPROVED | 5/6 | Level reconstruction for metrics |
+| 4.28 | Gas hard baseline | Raw persistence `y_t` | ✓ APPROVED | 6 | Must beat naive carry-forward |
+| 4.29 | Shadow baseline | Climatology (`month`,`hour`) | ✓ APPROVED | 6 | Secondary diagnostic gate |
 | 5.1 | Evaluation metrics | CRPS + PIT + RMSE | ✓ APPROVED | 6 | Quantile + accuracy validation |
 | 5.2 | Region fairness | Per-region + weighted | ✓ APPROVED | 6 | Verify imbalance mitigation |
 
@@ -900,6 +958,12 @@ Region weights for training (calculated):
 - **Finding 1**: Remote environment cost profile favors GPU-heavy execution, and CPU jobs should be minimized.
 - **Finding 2**: XGBoost quantile training can run on GPU (`device='cuda'`) with histogram tree method in the current stack.
 - **Impact**: `train_xgb.py` now supports explicit device selection (`--device auto|cuda|cpu`) with CUDA availability smoke-test; orchestrator forwards `--device` to both LSTM and XGB training/evaluation.
+
+### 9.7 h168 Utility Thresholds and Rescue Direction (Current)
+- **Finding 1**: Including mean concentration in h168 benchmarking clarifies utility: PM models are sub-mean-error (`RMSE/mean < 1`), while gas models frequently remain at or above mean scale (`RMSE/mean >= 1`).
+- **Finding 2**: `R2` around ~0.3 for PM can still coexist with unacceptable uncertainty behavior (coverage deficits and PIT deviation), so utility must be judged with joint gates.
+- **Finding 3**: Region-level bias at h168 is concentrated in gas targets and specific regions, motivating a gas-first rescue allocation.
+- **Impact**: Adopted tiered operational gates and pilot-first continuation policy; sweep moved to 24-run budget split (16 gas rescue + 8 PM refinement), with raw persistence as hard gas baseline and month-hour climatology as shadow baseline.
 
 ---
 
