@@ -21,19 +21,15 @@ Output: models/experiments/optuna_h168_best_configs.json
 """
 
 import json
-import math
 import os
-import random
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
 
 # ============================================================================
 # REPRODUCIBILITY
@@ -61,8 +57,8 @@ OUTPUT_FILE = "optuna_h168_best_configs.json"
 N_TRIALS = 25
 N_WORKERS = 4
 BATCH_SIZE = 32
-MAX_EPOCHS = 100
-PATIENCE = 10
+MAX_EPOCHS = 35
+PATIENCE = 4
 
 # CLI argument parsing
 import argparse
@@ -641,7 +637,7 @@ def main():
     print(f"Fixed: num_layers={NUM_LAYERS}, num_heads={NUM_HEADS}")
     print(f"Objective: {RMSE_WEIGHT}×RMSE + {PINBALL_WEIGHT}×PinballLoss")
     print(f"Pareto gate: Coverage < {COVERAGE_PENALTY_THRESHOLD} → penalty")
-    print(f"Target coverage: 0.90 for p05-p95")
+    print("Target coverage: 0.90 for p05-p95")
     print(f"Max trials: {N_TRIALS}")
     print("=" * 80)
     
