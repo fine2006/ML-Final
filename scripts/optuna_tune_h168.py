@@ -55,6 +55,8 @@ DATA_DIR = ROOT / "data" / "preprocessed_lstm_v1"
 OUTPUT_DIR = ROOT / "models" / "experiments"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+OUTPUT_FILE = "optuna_h168_best_configs.json"
+
 # Optuna settings
 N_TRIALS = 50
 N_WORKERS = 4
@@ -67,7 +69,18 @@ import argparse
 parser = argparse.ArgumentParser(description="Optuna hyperparameter tuning for h168")
 parser.add_argument("--n-trials", type=int, default=N_TRIALS, help="Number of Optuna trials per pollutant")
 parser.add_argument("--pollutants", type=str, default="pm25,pm10,no2,o3", help="Comma-separated pollutants")
+parser.add_argument("--gpu-id", type=int, default=None, help="GPU ID to use (0 or 1)")
+parser.add_argument("--output", type=str, default=None, help="Output filename (default: optuna_h168_best_configs.json)")
 args_cli = parser.parse_args()
+
+# Set GPU device if specified
+if args_cli.gpu_id is not None:
+    import os
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args_cli.gpu_id)
+
+# Custom output path for multi-GPU runs
+if args_cli.output:
+    OUTPUT_FILE = args_cli.output
 
 # Override with CLI args if provided
 if args_cli.n_trials != N_TRIALS:
@@ -777,7 +790,7 @@ def main():
             print(f"  Test Coverage: {cov_val:.4f}" if isinstance(cov_val, (int,float)) else "  Test Coverage: N/A")
     
     # Save results
-    output_path = OUTPUT_DIR / "optuna_h168_best_configs.json"
+    output_path = OUTPUT_DIR / OUTPUT_FILE
     with open(output_path, "w") as f:
         json.dump(all_results, f, indent=2, default=str)
     
@@ -788,5 +801,33 @@ def main():
     return all_results
 
 
+def merge_results():
+    """Merge results from multiple GPU runs."""
+    import argparse
+    parser = argparse.ArgumentParser(description="Merge Optuna results")
+    parser.add_argument("--files", type=str, nargs="+", help="Files to merge")
+    parser.add_argument("--output", type=str, default="optuna_h168_best_configs_merged.json", help="Output file")
+    args = parser.parse_args()
+    
+    merged = {}
+    for filepath in args.files:
+        p = Path(filepath)
+        if p.exists():
+            with open(p) as f:
+                data = json.load(f)
+            merged.update(data)
+            print(f"Merged {len(data)} entries from {p.name}")
+    
+    out_path = OUTPUT_DIR / args.output
+    with open(out_path, "w") as f:
+        json.dump(merged, f, indent=2)
+    print(f"Merged total: {len(merged)} pollutants -> {out_path}")
+
+
 if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--merge":
+        merge_results()
+    else:
+        main()
     main()

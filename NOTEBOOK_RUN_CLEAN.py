@@ -122,10 +122,76 @@ run_cmd(["uv", "run", "python", "scripts/preprocess_xgb.py"], cwd=ROOT, env=env)
 
 
 # %% [code]
-# Phase 2: Optuna hyperparameter tuning for h168
-print("\n=== Starting Optuna Hyperparameter Tuning for h168 ===")
+# Phase 2: Optuna hyperparameter tuning for h168 (dual-GPU parallel)
+print("\n=== Starting Optuna Hyperparameter Tuning for h168 (dual-GPU) ===")
+
+# GPU 0: pm25, pm10
+env_gpu0 = os.environ.copy()
+env_gpu0["CUDA_VISIBLE_DEVICES"] = "0"
+log_gpu0 = EXP / "optuna_gpu0.log"
+log_gpu0_handle = open(log_gpu0, "w", encoding="utf-8")
+
+cmd_gpu0 = [
+    "uv", "run", "python", "scripts/optuna_tune_h168.py",
+    "--pollutants", "pm25,pm10",
+    "--gpu-id", "0",
+    "--output", "optuna_h168_gpu0.json",
+    "--n-trials", "50",
+]
+
+print("$ CUDA_VISIBLE_DEVICES=0", " ".join(cmd_gpu0), f"> {log_gpu0}")
+proc_gpu0 = subprocess.Popen(
+    cmd_gpu0,
+    cwd=ROOT,
+    env=env_gpu0,
+    stdout=log_gpu0_handle,
+    stderr=subprocess.STDOUT,
+)
+
+# GPU 1: no2, o3
+env_gpu1 = os.environ.copy()
+env_gpu1["CUDA_VISIBLE_DEVICES"] = "1"
+log_gpu1 = EXP / "optuna_gpu1.log"
+log_gpu1_handle = open(log_gpu1, "w", encoding="utf-8")
+
+cmd_gpu1 = [
+    "uv", "run", "python", "scripts/optuna_tune_h168.py",
+    "--pollutants", "no2,o3",
+    "--gpu-id", "1",
+    "--output", "optuna_h168_gpu1.json",
+    "--n-trials", "50",
+]
+
+print("$ CUDA_VISIBLE_DEVICES=1", " ".join(cmd_gpu1), f"> {log_gpu1}")
+proc_gpu1 = subprocess.Popen(
+    cmd_gpu1,
+    cwd=ROOT,
+    env=env_gpu1,
+    stdout=log_gpu1_handle,
+    stderr=subprocess.STDOUT,
+)
+
+# Wait for both to complete
+print("Waiting for GPU 0 (pm25, pm10)...")
+ret_gpu0 = proc_gpu0.wait()
+log_gpu0_handle.close()
+print(f"GPU 0 finished with exit code: {ret_gpu0}")
+
+print("Waiting for GPU 1 (no2, o3)...")
+ret_gpu1 = proc_gpu1.wait()
+log_gpu1_handle.close()
+print(f"GPU 1 finished with exit code: {ret_gpu1}")
+
+if ret_gpu0 != 0 or ret_gpu1 != 0:
+    raise RuntimeError(f"Optuna failed: GPU0={ret_gpu0}, GPU1={ret_gpu1}")
+
+# Merge results
+print("Merging GPU results...")
 run_cmd([
-    "uv", "run", "python", "scripts/optuna_tune_h168.py"
+    "uv", "run", "python", "scripts/optuna_tune_h168.py",
+    "--merge",
+    "--files", str(EXP / "optuna_h168_gpu0.json"), str(EXP / "optuna_h168_gpu1.json"),
+    "--output", "optuna_h168_best_configs.json",
 ], cwd=ROOT)
 
 
