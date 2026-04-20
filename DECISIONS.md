@@ -40,8 +40,8 @@ Build a production-ready multi-horizon quantile regression forecasting model for
 ### 1.2 Target Variables
 - **Pollutants**: PM2.5, PM10, NO2, O3 (independent models per pollutant)
 - **Quantiles**: p5, p50, p95, p99 (4 quantile levels per horizon)
-- **Horizons**: t+1h, t+12h, t+24h, t+7d, t+28d (5 time horizons)
-- **Total outputs per model**: 5 horizons × 4 quantiles = 20 predictions
+- **Current active horizons**: `h1`, `h24`, `h168` (3 horizons)
+- **Total outputs per active model**: 1 horizon × 4 quantiles = 4 predictions
 
 Current experimental scope (active implementation):
 - Horizons: `h1`, `h24`, `h168`
@@ -49,8 +49,8 @@ Current experimental scope (active implementation):
 
 ### 1.3 Research Questions
 1. Can hierarchical LSTM with quantile regression provide calibrated uncertainty estimates?
-2. Does LSTM outperform XGB at long horizons (7d/28d)?
-3. Can region weighting ensure fair treatment of rare regions (Bhatagaon 8.8%)?
+2. How does LSTM compare to XGB across active horizons (`h1`,`h24`,`h168`) under fair-row benchmarking?
+3. Can region weighting ensure fair treatment across regions after canonical balancing?
 4. Can dual preprocessing pipelines optimize each model's strengths?
 
 ---
@@ -283,15 +283,14 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 | | (C) Ridge Regression (linear baseline) |
 | | (D) No baseline (LSTM only) |
 | **Chosen** | (A) XGBoost |
-| **Rationale** | - **LSTM's claim**: "Excels at long horizons (7d/28d)" |
+| **Rationale** | - Need a strong tabular baseline under active scope (`h1`,`h24`,`h168`) |
 | | - Need fair baseline to validate this claim |
 | | - (A) XGB is state-of-the-art for structured data (strong baseline) |
 | | - (B) RF likely weaker than XGB (less gradient boosting advantage) |
 | | - (C) Ridge too simple (linear can't capture pollution patterns) |
 | | - (D) no baseline = can't quantify LSTM advantage |
 | | - **Fair comparison**: XGB gets rich features (55-60), LSTM gets minimal (15) |
-| | - **Expected result**: LSTM 40-65% better on t+7d/t+28d |
-| **Implementation** | Separate XGB models per quantile per horizon (20 models total per pollutant) |
+| **Implementation** | Separate XGB models per quantile per horizon (12 models total per pollutant in active scope) |
 | | Same 70/15/15 split as LSTM for direct comparison |
 | **Evidence** | None yet (will measure Phase 5-6) |
 | **Status** | ✓ APPROVED |
@@ -669,6 +668,12 @@ Impact: Fairness controls remain required, but expected distortion from imbalanc
 
 ## 6. Performance Results (PARTIAL - PM2.5 CHECKPOINT)
 
+Historical section notice:
+- This section captures an earlier checkpoint and is retained for traceability.
+- Current operational comparisons should use latest `models/evaluation_summary.json` and
+  `models/fair_benchmark_summary.json`, plus run snapshots under `models/experiments/`.
+- Active horizons are `h1`,`h24`,`h168`; legacy rows below may include stale `t+12h` wording.
+
 Source artifacts:
 - `models/lstm_training_summary.json`
 - `models/xgb_training_summary.json`
@@ -769,6 +774,83 @@ Calibration conclusion (checkpoint):
   yet calibration-complete.
 - LSTM PIT KS is lower than XGB at both shared horizons, suggesting relatively
   better calibration shape despite mixed accuracy outcomes.
+
+---
+
+## 6.4 h168 Forensic Refinement
+
+### 6.4.1 Optuna Search Space Justification
+
+| Parameter | Range | Strategy |
+|-----------|-------|----------|
+| hidden_dim | [64, 96] | Small capacity as noise filter |
+| dropout | [0.35, 0.42] | High regularization for sensor noise |
+| head_dropout | [0.15, 0.20] | Quantile head stabilization |
+| lr | [2e-4, 5e-4] | Slow, stable convergence |
+| weight_decay | [1e-5, 1e-3] | Penalty for high-variance weights |
+| seq_len | Fixed: 336 (PM), 168 (gas) | Weekly cycle capture |
+| num_layers | 2 (fixed) | From pilot showing leaner is better |
+| num_heads | 2 (fixed) | From pilot showing leaner is better |
+
+Composite Loss: 0.6×RMSE + 0.4×MeanPinballLoss
+Pareto Gate: Penalize trials where Coverage < 0.70
+
+### 6.4.2 WFCV Methodology
+
+- 5-fold expanding window
+- 168h gap between train end and test start (operational gap)
+- Proves model predicts "next week" using only "last week" data
+- No shuffling, strict temporal splits
+
+### 6.4.3 Performance Tiers Classification
+
+| Tier | Pollutant | Focus | Criteria |
+|------|----------|-------|----------|
+| Tier 1 (Operational) | PM2.5, PM10 | Decisiveness | Must beat climatology by >10% |
+| Tier 2 (Rhythm) | NO₂ | Diurnal Shape | Pearson r > 0.6 for traffic cycle |
+| Tier 3 (Discovery) | O₃ | Baseline Proximity | Skill_Clim > -0.5, feature gap |
+
+Tiered Gates:
+- Tier 1: RMSE/Mean < 0.5, R² > 0.3, Coverage ∈ [0.85, 0.95]
+- Tier 2: RMSE/Mean < 0.8, Beats persistence, Skill_Clim > -0.2
+- Tier 3: Skill_Clim > -0.5 (lenient, negative R² = UV feature gap)
+
+### 6.4.4 Honest Failure Narrative
+
+> "The negative R² for Ozone across all regions indicates that at a 168h horizon, the pollutant is decoupled from historical temporal patterns and is instead driven by stochastic photochemical events not captured in the current feature set (UV/solar radiation missing)."
+
+Regional Consequences:
+- **Siltara**: Add "Volatility Warning" - coverage parity check instead of RMSE ratio
+- **NO₂**: Focus on diurnal correlation (r > 0.6) for traffic rhythm matching
+- **PM**: Best predictability at IGKV; Bhatagaon most susceptible to stagnation buildup
+
+### 6.4.5 Metrics Added
+
+- **MIS (Mean Interval Score)**: Penalizes both out-of-bounds and interval width
+- **Coverage Parity**: Ensures model equally honest across all regions
+- **Skill_Climatology**: 1 - RMSE_Model / RMSE_Climatology
+
+---
+
+## 6A. Current Operational Snapshot (Active Reference)
+
+Use these artifacts for current-state interpretation:
+- `models/evaluation_summary.json` (latest overwrite-based run)
+- `models/fair_benchmark_summary.json` (latest overwrite-based fair table)
+- `models/experiments/final_h168_snapshot_evaluation_summary.json` (stable all-pollutant h168 snapshot)
+- `models/experiments/final_h168_snapshot_fair_benchmark_summary.json` (stable all-pollutant h168 fair snapshot)
+
+Snapshot note:
+- Root summaries are overwrite-based and may contain subset runs (for example, latest local run = only `no2 h168`).
+- For cross-pollutant h168 comparison, use the `models/experiments/*snapshot*` artifacts.
+
+Operational gate context (h168 fair benchmark):
+- PM gate: `rmse_over_mean < 0.5` and `r2 > 0.3`
+- Gas gate: `rmse_over_mean < 0.8` and beat raw persistence (`y_t`)
+
+Representative h168 interpretation from stable snapshot:
+- PM (`pm25`,`pm10`): LSTM is often competitive/better on RMSE and CRPS but under-covers relative to 90% target.
+- Gas (`no2`,`o3`): gas remains the harder rescue area; persistence/climatology checks are required for utility claims.
 
 ---
 
@@ -1015,3 +1097,34 @@ Region weights for training (calculated):
 **Document Owner**: [To be assigned]
 **Last Updated**: [Auto-fill on save]
 **Review Frequency**: After each phase completion
+
+---
+
+## 12. Documentation Consistency Update (2026-04)
+
+This section records the doc-sync pass that aligned active documentation with implemented code and current artifacts.
+
+### 12.1 Scope Aligned
+- Active horizon scope standardized to `h1`,`h24`,`h168` in runtime-facing docs.
+- LSTM artifact naming standardized to horizon-suffixed checkpoints/prediction bundles.
+- XGB outlier policy clarified as pollutant-specific caps across all pollutants.
+- Evaluation docs updated to reflect overwrite-based root summaries and snapshot usage in `models/experiments/`.
+
+### 12.2 Updated Files
+- `AGENTS.md`
+- `ARCHITECTURE.md`
+- `PREPROCESSING_STRATEGY.md`
+- `PROJECT_STRUCTURE.md`
+- `EVALUATION_RESULTS.md`
+- `DATA_LOADING.md`
+- `GETTING_STARTED.md`
+- `IMPLEMENTATION_CONTRACT.md`
+- `SCRIPT_TEMPLATES.md`
+- `VISUALIZATIONS.md`
+- `DATA_INVESTIGATION.md`
+- `REPRODUCIBILITY.md`
+- `DECISIONS.md` (this section + active reference additions)
+
+### 12.3 Notes
+- Historical sections with legacy numbers/claims are retained where useful for traceability.
+- Operational decision authority remains current code + current DECISIONS sections + latest/snapshotted artifacts.

@@ -612,6 +612,7 @@ def compute_region_metrics(
 
     region_metrics: dict[str, Any] = {}
     rmse_values: list[float] = []
+    coverage_values: list[float] = []
 
     for region_name in sorted(set(regions.tolist())):
         mask = regions == region_name
@@ -625,21 +626,27 @@ def compute_region_metrics(
         pred_q_r = pred_q[mask]
 
         rmse_r = float(np.sqrt(mean_squared_error(y_r, p50_r)))
+        coverage_r = float(np.mean((y_r >= p05_r) & (y_r <= p95_r)))
         rmse_values.append(rmse_r)
+        coverage_values.append(coverage_r)
         region_metrics[str(region_name)] = {
             "rmse": rmse_r,
             "mae": float(mean_absolute_error(y_r, p50_r)),
             "crps_approx": float(np.mean(np.abs(pred_q_r - y_r[:, None]))),
-            "coverage_p05_p95": float(np.mean((y_r >= p05_r) & (y_r <= p95_r))),
+            "coverage_p05_p95": coverage_r,
             "count": int(mask.sum()),
         }
 
     fairness = None
     if rmse_values:
+        max_cov = max(coverage_values)
+        min_cov = min(coverage_values)
+        coverage_parity = 1.0 - abs(max_cov - min_cov) if max_cov > 0 else 0.0
         fairness = {
             "rmse_max_min_ratio": float(max(rmse_values) / max(min(rmse_values), 1e-8)),
             "rmse_max": float(max(rmse_values)),
             "rmse_min": float(min(rmse_values)),
+            "coverage_parity": float(coverage_parity),
         }
 
     return region_metrics, fairness
@@ -661,6 +668,12 @@ def compute_horizon_metrics(
     quantile_crossing_rate = float(np.mean(np.any(np.diff(pred_q, axis=1) < 0, axis=1)))
     interval_width_p05_p95 = float(np.mean(p95 - p05))
 
+    mis_lower = np.maximum(p05 - y_true, 0)
+    mis_upper = np.maximum(y_true - p95, 0)
+    mis_coverage_penalty = mis_lower + mis_upper
+    mis_width_penalty = (p95 - p05) / 2.0
+    mis = float(np.mean(mis_width_penalty + mis_coverage_penalty))
+
     pit = pit_values_from_quantiles(pred_q, y_true, quantiles)
     pit_ks_stat, pit_ks_pvalue = ks_uniformity(pit)
 
@@ -678,6 +691,7 @@ def compute_horizon_metrics(
         "tail_above_p95": float(np.mean(y_true > p95)),
         "tail_above_p99": float(np.mean(y_true > p99)),
         "interval_width_p05_p95": interval_width_p05_p95,
+        "mis": mis,
         "quantile_crossing_rate": quantile_crossing_rate,
         "pit_ks_stat": pit_ks_stat,
         "pit_pvalue": pit_ks_pvalue,
@@ -1392,10 +1406,21 @@ def build_fair_intersection_comparison(
                             "rmse_max_min_ratio", np.nan
                         )
                     ),
+                    "lstm_coverage_parity": float(
+                        (l_metrics.get("fairness") or {}).get(
+                            "coverage_parity", np.nan
+                        )
+                    ),
+                    "lstm_mis": float(
+                        l_metrics.get("mis", np.nan)
+                    ),
                     "xgb_fairness_ratio": float(
                         (x_metrics.get("fairness") or {}).get(
                             "rmse_max_min_ratio", np.nan
                         )
+                    ),
+                    "xgb_mis": float(
+                        x_metrics.get("mis", np.nan)
                     ),
                 }
             )
@@ -1858,6 +1883,69 @@ def plot_predictions_vs_actual(payload: QuantilePayload, pollutant: str) -> str 
     return str(out_path)
 
 
+def plot_diurnal_overlay(
+    lstm_payload: QuantilePayload, xgb_payload: QuantilePayload, pollutant: str, horizon: int
+) -> str | None:
+    """Plot diurnal average overlay: Actuals vs Model Predictions (24-hour cycle).
+    
+    Shows the average 24-hour cycle of Actuals vs LSTM vs XGB predictions.
+    Critical for O3 and NO2 to identify phase shifts in gas cycles.
+    """
+    try:
+        import pandas as pd
+        
+        l_df = lstm_payload.predictions
+        x_df = xgb_payload.predictions
+        
+        if "timestamp" not in l_df.columns or "timestamp" not in x_df.columns:
+            return None
+        
+        l_df["timestamp"] = pd.to_datetime(l_df["timestamp"])
+        x_df["timestamp"] = pd.to_datetime(x_df["timestamp"])
+        
+        l_df["hour"] = l_df["timestamp"].dt.hour
+        x_df["hour"] = x_df["timestamp"].dt.hour
+        
+        target_col = f"target_{pollutant}_h{horizon}"
+        if target_col not in l_df.columns:
+            return None
+        
+        l_hourly = l_df.groupby("hour").agg({
+            target_col: "mean",
+            f"q50_{pollutant}_h{horizon}": "mean"
+        }).reset_index()
+        l_hourly.columns = ["hour", "actual", "lstm_pred"]
+        
+        x_hourly = x_df.groupby("hour").agg({
+            target_col: "mean",
+            f"q50_{pollutant}_h{horizon}": "mean"
+        }).reset_index()
+        x_hourly.columns = ["hour", "actual", "xgb_pred"]
+        
+        merged = l_hourly.merge(x_hourly, on="hour")
+        
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(merged["hour"], merged["actual"], "k-", linewidth=2, label="Actual", marker="o")
+        ax.plot(merged["hour"], merged["lstm_pred"], "b--", linewidth=1.5, label="LSTM", marker="s")
+        ax.plot(merged["hour"], merged["xgb_pred"], "r-.", linewidth=1.5, label="XGB", marker="^")
+        
+        ax.set_xlabel("Hour of Day")
+        ax.set_ylabel(f"{pollutant.upper()} Concentration")
+        ax.set_title(f"Diurnal Cycle: {pollutant.upper()} h{horizon} - Actual vs Predictions")
+        ax.set_xticks(range(0, 24, 3))
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        out_path = VIS_DIR / f"diurnal_overlay_{pollutant}_h{horizon}.png"
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=300, bbox_inches="tight")
+        plt.close()
+        
+        return str(out_path)
+    except Exception:
+        return None
+
+
 def plot_final_summary_table(rows: list[dict[str, Any]], pollutant: str) -> str | None:
     subset = [r for r in rows if r["pollutant"] == pollutant]
     if not subset:
@@ -1933,6 +2021,10 @@ def generate_visualizations(
         fairness = plot_region_fairness(l_payload, x_payload, pollutant, horizon)
         if fairness:
             created.append(fairness)
+        
+        diurnal = plot_diurnal_overlay(l_payload, x_payload, pollutant, horizon)
+        if diurnal:
+            created.append(diurnal)
 
     preds = plot_predictions_vs_actual(lstm_payloads[pollutant], pollutant)
     if preds:

@@ -226,7 +226,7 @@ Configuration: None (exploratory)
 CRITICAL:
 - Document all findings in DATA_INVESTIGATION.md sections 1-3
 - Classify Bhatagaon Sept 2025 spike: real event or sensor error?
-- Quantify data loss: where are the 31.9% losses coming from?
+- Quantify canonical pipeline data loss: where does attrition come from?
 - Calculate region weights for Phase 5 training
 """
 
@@ -310,14 +310,14 @@ def analyze_bhatagaon_spike(data: pd.DataFrame, logger: logging.Logger) -> Dict[
 
 def analyze_data_loss(data: pd.DataFrame, logger: logging.Logger) -> Dict[str, Any]:
     """
-    Root cause analysis for 31.9% data loss (170,591 → 116,257).
+    Root cause analysis for canonical hourly data attrition.
     
     Returns:
         Breakdown of loss sources
     
     Procedure (from DATA_INVESTIGATION.md section 2.2):
-    1. Before cleaning: count_before = 170,591
-    2. After cleaning: count_after = 116,257 (from existing codebase)
+    1. Baseline canonical rows: count_before = 125,017
+    2. After sanitization/interpolation/sequence checks: quantify retained rows
     3. Analyze: Which regions/pollutants lost most?
     4. Identify: Missing values, outliers removed, temporal gaps
     5. Quantify: % loss per region, per pollutant
@@ -337,7 +337,7 @@ def analyze_data_loss(data: pd.DataFrame, logger: logging.Logger) -> Dict[str, A
 
 def analyze_region_imbalance(data: pd.DataFrame, logger: logging.Logger) -> Dict[str, Any]:
     """
-    Quantify region imbalance (6.5× ratio: IGKV 57% vs Bhatagaon 8.8%).
+    Quantify post-canonical region imbalance and compute weights.
     
     Returns:
         Region distribution and calculated training weights
@@ -495,10 +495,10 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 # ==================== LSTM CONFIG ====================
 
 LSTM_CONFIG = {
-    "horizons": [1, 12, 24, 168, 672],  # hours (t+1h, t+12h, t+24h, t+7d, t+28d)
+    "horizons": [1, 24, 168],  # active scope
     "quantiles": [0.05, 0.50, 0.95, 0.99],
-    "seq_len_multiplier": 2,  # seq_len = 2 × horizon_hours
-    "max_seq_len": 672,  # Cap at 28d lookback
+    "seq_len_map": {1: 168, 24: 336, 168: 720},
+    "max_seq_len": 8760,
     "imputation_threshold": 6,  # hours (interpolate <6h, break >6h gaps)
     "scaler": "robust",  # RobustScaler (median/IQR)
     "feature_count": 15,  # Minimal features for LSTM
@@ -624,8 +624,8 @@ Purpose: Phase 5 - Train hierarchical quantile regression LSTM
 Inputs:
   - data/preprocessed_lstm_v1/ (from Phase 3)
 Outputs:
-  - models/lstm_quantile_{pollutant}.pt (trained models)
-  - models/lstm_predictions_{pollutant}.npz (test prediction bundles)
+  - models/lstm_quantile_{pollutant}_h{horizon}.pt (trained models)
+  - models/lstm_predictions_{pollutant}_h{horizon}.npz (test prediction bundles)
   - logs/train_lstm/ (convergence curves, epoch logs)
   - TRAINING_LOG.md (to create: epoch logs, debug notes)
 
@@ -650,8 +650,8 @@ class HierarchicalQuantileLSTM(nn.Module):
     Architecture (from ARCHITECTURE.md section 2):
     - Input: (batch_size, seq_len, features)
     - Backbone: BiLSTM (2 layers, 128 hidden, dropout 0.3)
-    - Heads: 5 horizon-specific attention heads
-    - Output: (batch_size, 20) = 5 horizons × 4 quantiles
+    - Head: horizon-specific attention + quantile MLP
+    - Output (separated horizon): (batch_size, 1, 4)
     """
     
     def __init__(self, config: Dict):
@@ -739,11 +739,11 @@ Every script should save outputs with this pattern:
 
 ```
 models/
-├── lstm_quantile_pm25.pt (final model)
-├── lstm_predictions_pm25.npz
-├── lstm_quantile_pm10.pt
-├── lstm_quantile_no2.pt
-└── lstm_quantile_o3.pt
+├── lstm_quantile_pm25_h1.pt
+├── lstm_quantile_pm25_h24.pt
+├── lstm_quantile_pm25_h168.pt
+├── lstm_predictions_pm25_h168.npz
+└── ... (same pattern for pm10/no2/o3)
 
 logs/
 ├── train_lstm/

@@ -81,13 +81,14 @@ ML-Final/
 │       └── metadata.json
 │
 ├── models/
-│   ├── lstm_quantile_{pollutant}.pt
-│   ├── lstm_predictions_{pollutant}.npz
+│   ├── lstm_quantile_{pollutant}_h{horizon}.pt
+│   ├── lstm_predictions_{pollutant}_h{horizon}.npz
 │   ├── xgb_quantile_{pollutant}_h{horizon}_q{quantile}.json
 │   ├── lstm_training_summary.json
 │   ├── xgb_training_summary.json
 │   ├── evaluation_summary.json
 │   ├── fair_benchmark_summary.json
+│   ├── experiments/
 │   └── prediction_output.json
 │
 ├── logs/
@@ -130,10 +131,10 @@ Use `uv` to run scripts in the managed environment:
 uv run python scripts/data_investigation.py
 uv run python scripts/preprocess_lstm.py
 uv run python scripts/preprocess_xgb.py
-uv run python scripts/train_lstm.py --pollutants pm25,pm10,no2,o3 --horizons 1,12,24,168,672
-uv run python scripts/train_xgb.py --pollutants pm25,pm10,no2,o3 --horizons 1,12,24,168,672 --device cuda
-uv run python scripts/evaluate.py --pollutants pm25,pm10,no2,o3 --horizons 1,12,24,168,672
-uv run python scripts/evaluate.py --pollutants pm25,pm10,no2,o3 --horizons 1,12,24,168,672 --fair-intersection
+uv run python scripts/train_lstm.py --pollutants pm25,pm10,no2,o3 --horizons 1,24,168
+uv run python scripts/train_xgb.py --pollutants pm25,pm10,no2,o3 --horizons 1,24,168 --device cuda
+uv run python scripts/evaluate.py --pollutants pm25,pm10,no2,o3 --horizons 1,24,168
+uv run python scripts/evaluate.py --pollutants pm25,pm10,no2,o3 --horizons 1,24,168 --fair-intersection
 uv run python scripts/predict.py --region AIIMS --horizon 24 --pollutants pm25,pm10,no2,o3
 ```
 
@@ -153,6 +154,6 @@ Legacy scripts from the previous implementation (e.g., `*_v2.py`, stacking/basel
 
 ## Next Steps
 
-1. Run Phase 5 training to completion for all pollutants/horizons (LSTM + XGB).
-2. Run Phase 6 evaluation to regenerate `models/evaluation_summary.json` and Phase 6 plots.
-3. Update `DECISIONS.md` section 6 and `TRAINING_LOG.md` / `EVALUATION_RESULTS.md` with final (non-checkpoint) metrics.
+1. Run Phase 5 training to completion for active horizons (`h1`,`h24`,`h168`) across all pollutants (LSTM + XGB).
+2. Run Phase 6 evaluation with fair intersection and quantile calibration where required.
+3. Snapshot key outputs under `models/experiments/` for run-to-run comparability.

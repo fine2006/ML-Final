@@ -260,10 +260,10 @@ Update DECISIONS.md AFTER implementation if:
 # From DECISIONS.md section 4.4: Region-weighted loss
 # Calculate weight per region: weight_r = (1/4) / fraction_r
 region_weight = {
-    'Bhatagaon': 2.84,   # (1/4) / 0.088 = 2.84
-    'IGKV': 0.44,        # (1/4) / 0.57 = 0.44
-    'AIIMS': 1.26,       # (1/4) / 0.198 = 1.26
-    'SILTARA': 1.27,     # (1/4) / 0.197 = 1.27
+    'AIIMS': 0.979,
+    'IGKV': 0.994,
+    'Bhatagaon': 1.009,
+    'SILTARA': 1.020,
 }
 ```
 
@@ -345,4 +345,3 @@ At project completion, the following must be true:
 4. **Results recorded**: All performance metrics in DECISIONS.md section 6
 5. **Reproducibility verified**: Another agent can run pipeline and get identical results
 6. **Visualizations complete**: All outputs match VISUALIZATIONS.md specs
-

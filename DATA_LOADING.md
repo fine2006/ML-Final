@@ -335,13 +335,13 @@ for sheet in xls.sheet_names:
    - Procedure: See DATA_INVESTIGATION.md section 1.2
 
 2. **Missing Data**
-   - 31.9% records lost after cleaning
-   - Root cause: Missing values, temporal gaps, outliers
+   - Canonical pipeline attrition is tracked in Phase 1 outputs (`phase1_investigation_results.json`)
+   - Root causes: impossible values, unresolved temporal gaps, and sequence constraints
    - Analysis: Phase 1 data investigation
 
 3. **Region Imbalance**
-   - IGKV: 57% of total records
-   - Bhatagaon: 8.8% of total records
+   - Canonical hourly distribution is near-balanced across all regions (~25% each)
+   - Post-sequence imbalance is mild and handled with mild region weights
    - Handled via region weighting (DECISIONS.md section 4.3)
 
 ### Validation After Loading

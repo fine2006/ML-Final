@@ -153,8 +153,8 @@ EOF
 
 **Phase 1 objectives (3 parallel analyses):**
 1. Analyze Bhatagaon Sept 2025 spike (real event vs sensor error?)
-2. Analyze data loss (where do 31.9% records get lost?)
-3. Quantify region imbalance (6.5× IGKV:Bhatagaon)
+2. Analyze data loss root causes in canonical hourly pipeline
+3. Quantify post-canonical region imbalance and derive training weights
 
 **Outputs:**
 - Plots in `visualizations/phase_1_data_investigation/`
@@ -175,8 +175,8 @@ Phase 1: Data Investigation - Analyze extreme data quality issues
 
 Objectives:
 1. Bhatagaon Sept 2025 spike: Real event vs sensor error?
-2. Data loss root cause: Where do 31.9% records get lost?
-3. Region imbalance: Quantify 6.5× imbalance (IGKV:Bhatagaon)
+2. Data loss root cause: Where does canonical hourly attrition occur?
+3. Region imbalance: Quantify mild post-canonical imbalance and weights
 
 Output:
 - Plots: visualizations/phase_1_data_investigation/
@@ -381,4 +381,3 @@ ls -la visualizations/phase_1_data_investigation/
 ```
 
 **If you see all three ✓, you're ready to start coding!**
-

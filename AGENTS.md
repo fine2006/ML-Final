@@ -135,7 +135,7 @@ python scripts/predict.py                 # Inference: one region + one horizon 
   - Uncertain → Document for manual review
 
 #### 1.2 Data Loss Root Cause Analysis
-- **Problem**: 31.9% records lost (170,591 → 116,257)
+- **Problem**: Quantify root-cause attrition in canonical hourly pipeline (125,017 baseline rows)
 - **Determine**: Where is loss coming from?
   - Missing data gaps?
   - Outlier removal?
@@ -144,7 +144,7 @@ python scripts/predict.py                 # Inference: one region + one horizon 
 - **Outcome**: Per-region loss breakdown + recovery opportunities
 
 #### 1.3 Region Imbalance Quantification
-- **Problem**: 6.5× imbalance (IGKV 57% vs Bhatagaon 8.8%)
+- **Problem**: Validate region imbalance after canonical merge + dedup
 - **Determine**: Is this inherent or fixable?
 - **Procedure**: See DATA_INVESTIGATION.md section 3.2
 - **Outcome**: Imbalance characterization + training weights calculation
@@ -161,9 +161,9 @@ python scripts/predict.py                 # Inference: one region + one horizon 
 ✓ Already designed. See ARCHITECTURE.md for full specifications.
 
 **Key Design Points**:
-- Hierarchical multi-horizon LSTM (single backbone, 5 horizon-specific attention heads)
-- Quantile regression (p5, p50, p95, p99 per horizon = 20 outputs)
-- 5 horizons (t+1h, t+12h, t+24h, t+7d, t+28d)
+- Hierarchical quantile LSTM per `(pollutant, horizon)` (shared architecture pattern, horizon-separated training)
+- Quantile regression (p5, p50, p95, p99 per horizon)
+- Active horizons: `h1`, `h24`, `h168`
 - BiLSTM (2 layers, 128 hidden, bidirectional, dropout 0.3)
 - Region-weighted multi-quantile pinball loss
 - XGB baseline for fair comparison
@@ -184,7 +184,7 @@ python scripts/predict.py                 # Inference: one region + one horizon 
 - Data retention: ~73%
 
 #### XGB Pipeline (feature-focused)
-- Remove outliers (PM2.5 >300)
+- Remove outliers with pollutant caps (PM2.5 >300, PM10 >600, NO2 >250, O3 >150)
 - Aggressive imputation (all gaps + 6 missingness features)
 - Rich features (55-60)
 - No scaling (scale-invariant)
@@ -224,18 +224,18 @@ visualizations/                  # Output plots & results
 
 **LSTM Training** (`train_lstm.py`):
 - Input: LSTM-ready data from Phase 3
-- Output: Trained model → `models/lstm_quantile_[pollutant].pt`
-- Output: Test prediction bundle → `models/lstm_predictions_[pollutant].npz`
+- Output: Trained model → `models/lstm_quantile_[pollutant]_h[horizon].pt`
+- Output: Test prediction bundle → `models/lstm_predictions_[pollutant]_h[horizon].npz`
 - Architecture: See ARCHITECTURE.md section 2
 - Loss: Multi-quantile pinball with region weights (see ARCHITECTURE.md 3.1-3.2)
 - Optimizer: Adam (lr=0.001)
 - Epochs: 100 with early stopping (patience=10, monitor=val CRPS)
 - Batch size: 32 (stratified: ~8 per region)
-- For all 4 pollutants: PM2.5, PM10, NO2, O3 (independent models)
+- For all 4 pollutants: PM2.5, PM10, NO2, O3 (independent per-horizon models)
 
 **XGB Training** (`train_xgb.py`):
 - Input: XGB-ready data from Phase 3
-- Output: Trained models (20 per pollutant: 5 horizons × 4 quantiles)
+- Output: Trained models (12 per pollutant in active scope: 3 horizons × 4 quantiles)
 - Models: Separate per quantile (p5, p50, p95, p99)
 - Hyperparameters: See ARCHITECTURE.md section 6.2
 - For all 4 pollutants: PM2.5, PM10, NO2, O3
@@ -263,11 +263,9 @@ visualizations/                  # Output plots & results
 - Verify region weighting worked
 
 **Expected Results**:
-- t+1h: LSTM & XGB similar
-- t+12h: LSTM ~10% better
-- t+24h: LSTM ~20% better
-- t+7d: LSTM 40-65% better
-- t+28d: LSTM 40-65% better
+- h1/h24/h168 quality varies by pollutant and uncertainty criterion (RMSE, CRPS, coverage, PIT)
+- PM family tends to be near-utility at h168 under RMSE/mean gates; gas family requires rescue tuning
+- Use tiered operational gates in `evaluate.py` outputs for pass/fail decisions
 
 **Create After Phase 6**:
 - EVALUATION_RESULTS.md (final metrics, plots, fairness analysis)
@@ -353,7 +351,8 @@ assert val_data.timestamp.max() < test_data.timestamp.min()
 - **LSTM pipeline**: Keep ALL outliers (PM2.5 >500 OK if pattern real)
   - Only remove physically impossible (negatives, -2B)
   - Reason: Attention learns to weight extreme z-scores
-- **XGB pipeline**: Remove PM2.5 >300
+- **XGB pipeline**: Remove pollutant-specific extremes via fixed caps
+  - PM2.5 >300, PM10 >600, NO2 >250, O3 >150
   - Reason: Extreme values distort tree splits for entire dataset
 
 **Don't mix**: If LSTM removes outliers, it won't learn patterns. If XGB keeps outliers, trees split on noise.
@@ -364,8 +363,9 @@ assert val_data.timestamp.max() < test_data.timestamp.min()
 weight_r = (1/4) / fraction_r
 
 # Example:
-# Bhatagaon: 8.8% → weight = 0.25 / 0.088 = 2.84×
-# IGKV: 57% → weight = 0.25 / 0.57 = 0.44×
+# Canonical pipeline weights are mild and close to uniform.
+# Use values from Phase 1 outputs / metadata (example order):
+# AIIMS ~0.979×, IGKV ~0.994×, Bhatagaon ~1.009×, SILTARA ~1.020×
 
 # Validation: per-region val loss should be similar (not 5× different)
 ```
@@ -373,11 +373,10 @@ weight_r = (1/4) / fraction_r
 ### ⚠️ SEQUENCE LENGTH MUST RESPECT HORIZON
 ```python
 # NOT fixed: Don't use same seq_len for all horizons
-seq_len = 24  # ✗ WRONG for t+1h (wastes computation) and t+28d (too short)
+seq_len = 24  # ✗ WRONG for mixed horizons (under-context for h168)
 
-# YES adaptive: Match lookback to horizon
-seq_len = 2 * horizon_hours  # ✓ CORRECT
-# t+1h → 2h | t+12h → 24h | t+24h → 48h | t+7d → 336h | t+28d → 672h
+# YES horizon-calibrated map for active scope
+seq_len_map = {1: 168, 24: 336, 168: 720}  # ✓ CURRENT DEFAULT
 ```
 
 ### ⚠️ TIME-BASED SPLIT (NO SHUFFLING)
@@ -426,7 +425,7 @@ test = data[data.timestamp >= '2024-07-01']
 3. Extend training epochs; may need more data
 
 ### Pitfall 4: Data Leakage via Weather Features
-**Symptom**: 7d/28d horizons perform unrealistically well
+**Symptom**: h168 performs unrealistically well
 
 **Root**: Weather features include t or future (today's weather predicts tomorrow)
 
@@ -464,14 +463,14 @@ test = data[data.timestamp >= '2024-07-01']
 
 ✅ **Phase 5 Complete**:
 - train_lstm.py trained (all 4 pollutants)
-- train_xgb.py trained (all 4 pollutants, 20 models each)
+- train_xgb.py trained (all 4 pollutants, 12 models each in active scope)
 - Models saved to `models/`
 - TRAINING_LOG.md created
 
 ✅ **Phase 6 Complete**:
 - LSTM produces calibrated quantiles (PIT test passes)
 - XGB baseline trained (RMSE baseline)
-- Per-horizon metrics show LSTM advantage at 7d/28d
+- Per-horizon metrics reported for active scope (`h1`,`h24`,`h168`) with gate-based interpretation
 - Per-region fairness verified (max ratio <1.5×)
 - EVALUATION_RESULTS.md created
 - DECISIONS.md updated with all results

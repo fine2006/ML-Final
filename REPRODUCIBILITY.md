@@ -153,7 +153,7 @@ metadata = {
     "random_seed": RANDOM_SEED,
     "feature_columns": feature_columns,
     "target_columns": target_columns,
-    "horizons": [1, 12, 24, 168, 672],
+    "horizons": [1, 24, 168],
     "split_boundaries": split_boundaries,
     "scaler": scaler_params,
     "region_weights": region_weights,
@@ -175,7 +175,7 @@ data_dir = "data/preprocessed_lstm_v1"
 with open(f"{data_dir}/metadata.json", 'r') as f:
     metadata = json.load(f)
 print(f"Using preprocessing from {metadata['created_at']}")
-print(f"Processing steps: {metadata['processing_steps']}")
+print(f"Pipeline: {metadata['pipeline']} | Horizons: {metadata['horizons']}")
 
 # Load rowwise split tables
 train_df = pd.read_csv(f"{data_dir}/train.csv")
@@ -218,15 +218,15 @@ hyperparams = {
     "hidden_dim": 128,
     "n_layers": 2,
     "region_weights": {
-        "Bhatagaon": 2.84,
-        "IGKV": 0.44,
-        "AIIMS": 1.26,
-        "SILTARA": 1.27,
+        "AIIMS": 0.979,
+        "IGKV": 0.994,
+        "Bhatagaon": 1.009,
+        "SILTARA": 1.020,
     },
     "optimizer": "Adam",
     "loss_function": "multi_quantile_pinball",
     "quantiles": [0.05, 0.50, 0.95, 0.99],
-    "horizons": [1, 12, 24, 168, 672],
+    "horizons": [1, 24, 168],
     "library_versions": {
         "torch": torch.__version__,
         "numpy": np.__version__,

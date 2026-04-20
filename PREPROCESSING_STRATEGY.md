@@ -99,13 +99,10 @@ Step 2: Extract by region & hourly aggregate
 ### 2.3 Initial Data Shape
 ```
 After raw loading:
-  - Total records: 170,591 (4 regions × 4 years × ~52 weeks × 168 hours/week)
-  - By region:
-    * Bhatagaon: 15,000 records (8.8%)
-    * IGKV: 97,200 records (57.0%)
-    * AIIMS: 28,200 records (16.5%)
-    * SILTARA: 30,200 records (17.7%)
-  - Missing: 31.9% (reasons: sensor downtime, data collection gaps, transmission errors)
+  - Canonical hourly unique rows: 125,017
+  - Parsed source rows before canonicalization: 750,540
+  - Canonical region distribution is near-balanced (~25% each)
+  - Post-sequence imbalance remains mild (~1.04x max/min)
 ```
 
 ---
@@ -160,16 +157,16 @@ Step 2: Handle gaps
              → Start new sequence at 120
 
 Step 3: Data retention
-  Input: 170,591 records
-  After interpolation: ~125,000 records (~73%)
+  Input: 125,017 canonical hourly rows
+  After interpolation + sequence handling (example PM2.5): 122,487 (~98.0% of canonical)
   
   Loss sources:
-    - 6-hour gaps: ~5% loss
-    - 24-hour gaps: ~15% loss
-    - Extremely long gaps (SILTARA 2023): ~7% loss
+    - Impossible values are the dominant hard-loss source
+    - Long unresolved gaps create most continuity loss
+    - Outlier clipping is intentionally minimal for LSTM
 ```
 
-**Critical insight**: Losing data on >24h gaps is acceptable because LSTM's 672h lookback for t+28d doesn't cross those breaks anyway. Each sequence is independent.
+**Critical insight**: sequence continuity rules are tuned for active horizons (`h1`,`h24`,`h168`) and should preserve realistic temporal structure while avoiding synthetic long-gap stitching.
 
 ### 3.3 RobustScaler (LSTM-Specific)
 
@@ -203,9 +200,9 @@ For LSTM:
 **Objective**: Create sequences of length = 2 × horizon
 
 ```python
-def create_lstm_sequences(data, horizons=[1, 12, 24, 168, 672]):
+def create_lstm_sequences(data, horizons=[1, 24, 168]):
     """
-    horizons in hours: [1h, 12h, 24h, 7d, 28d]
+    horizons in hours: [1h, 24h, 168h]
     """
     sequences = []
     
@@ -233,11 +230,9 @@ def create_lstm_sequences(data, horizons=[1, 12, 24, 168, 672]):
 ```
 Horizon    Seq_len    Reason
 -------    -------    ------
-t+1h       2h         Minimal context (yesterday's hour + this hour)
-t+12h      24h        Full day cycle
-t+24h      48h        2-day cycle (weekday patterns)
-t+7d       336h       Full week (Monday effect, etc.)
-t+28d      672h       Full 4 weeks (seasonal patterns within month)
+h1         168h       robust short-horizon context
+h24        336h       day-scale context with stability margin
+h168       720h       long-context weekly structure
 ```
 
 ### 3.5 Lag Features & Time Encodings
@@ -350,7 +345,7 @@ Raw data
   ↓
 Aggressive missing value handling (interpolate ALL gaps + 6 engineer features)
   ↓
-Remove extreme outliers (PM2.5 > 300 or < 0)
+Remove extreme outliers using pollutant caps (PM2.5/PM10/NO2/O3)
   ↓
 Create lag features (1, 3, 6, 12, 24, 48, 168h)
   ↓
@@ -413,40 +408,29 @@ Interpretation:
 **Strategy**: Remove extreme values to prevent tree split distortion
 
 ```
-Step 1: Identify outliers
-  For each region independently:
-    Q1 = 25th percentile (e.g., 45 µg/m³)
-    Q3 = 75th percentile (e.g., 120 µg/m³)
-    IQR = Q3 - Q1 = 75 µg/m³
-    
-    Lower bound = Q1 - 1.5 × IQR = 45 - 112.5 = SKIP (allow negatives to be caught by threshold)
-    Upper bound = Q3 + 1.5 × IQR = 120 + 112.5 = 232.5 µg/m³
+Step 1: Apply fixed pollutant caps (current implementation)
+  - PM2.5: remove if <0 or >300
+  - PM10:  remove if <0 or >600
+  - NO2:   remove if <0 or >250
+  - O3:    remove if <0 or >150
 
-Step 2: Remove outliers
-  For each region:
-    Remove if PM2.5 < 0 (impossible)
-    Remove if PM2.5 > 300 (extreme outlier, likely error)
-    
-  Alternative: Region-specific thresholds
-    Bhatagaon (higher baseline): remove if > 400
-    IGKV (lower baseline): remove if > 250
-    
-  Reason: Different regions have different natural variability
+Step 2: Keep policy global (not region-specific)
+  - Caps are deterministic and reproducible
+  - Prevent region-specific threshold drift between runs
 
-Step 3: Data retention
-  Input: 125,000 records (after LSTM's light gap handling)
-  After outlier removal: ~120,000 records (~96%)
-  Loss: ~4% (extreme values)
+Step 3: Retention impact
+  - In canonical Phase 1 context, cap-based loss is relatively small
+  - Impossible-value and unresolved-gap handling remain larger contributors
 ```
 
-**Why >300 threshold for XGB?**
+**Why pollutant fixed caps for XGB?**
 ```
 Explanation:
-  - PM2.5 > 300 is rare (< 1% of data)
+  - Extreme tails are rare and can dominate tree splits
   - For XGB: 1000-sample tree split on 10 extreme values damages all 1000 predictions
   - XGB trees can't learn from individual extreme values (they split at splits)
-  - Better to lose rare data than corrupt model for all data
-  
+  - Better to clip/remove tail extremes than corrupt broad split structure
+   
 For LSTM:
   - LSTM learns sequences; one extreme value is okay if pattern makes sense
   - Attention learns to downweight outliers
@@ -659,15 +643,17 @@ Note: Separate models for each quantile (p5, p50, p95, p99)
 ```
 Stage                          Records      Retention    Loss
 -----                          -------      ---------    ----
-Raw data                        170,591      100%         0%
-  ↓ Drop impossible values      168,500      98.8%        1.2%
-  ↓ Interpolate gaps <6h        165,000      96.7%        3.1%
-  ↓ Break on gaps >6h           125,000      73.3%        23.4%
-  ↓ (LSTM pipeline end)
+Canonical hourly baseline                  125,017
+  ↓ Drop impossible values (PM2.5 ex.)    120,548
+  ↓ Interpolate <=6h gaps (PM2.5 ex.)     122,808
+  ↓ XGB caps (all pollutants, PM2.5 ex.)  122,652
+  ↓ Sequence handling (PM2.5 ex.)         122,487
 
-  ↓ Aggressive interpolation    160,000      93.8%        6.2%
-  ↓ Remove outliers (>300)      120,000      70.4%        29.6%
-  ↓ (XGB pipeline end)
+Per-pollutant sequence-ready examples:
+  - PM2.5: 122,487
+  - PM10: 121,539
+  - NO2:  122,706
+  - O3:   122,646
 ```
 
 **Note**: Different retention for LSTM (99% → 73%) vs XGB (99% → 70%) is expected:
@@ -689,13 +675,13 @@ Opportunity 2: Region-specific thresholds
   Expected impact: +2-3% for Bhatagaon, more fairness
 
 Opportunity 3: SILTARA 2023 cyclical interpolation
-  Current: SILTARA missing entire 2023 (365-day gap → sequence breaks)
-  Alternative: Average same day-of-year from 2022 & 2024
-  Expected impact: +7% more data for SILTARA
+  Current: SILTARA has higher unresolved-gap burden than other regions
+  Alternative: targeted interpolation-threshold ablation with strict leakage controls
+  Expected impact: moderate recovery without violating temporal integrity
 
 Opportunity 4: Looser outlier bounds for XGB
-  Current: Remove PM2.5 > 300
-  Alternative: Remove PM2.5 > 400 (3-sigma for normal baseline)
+  Current: pollutant-specific caps (PM2.5/PM10/NO2/O3)
+  Alternative: pollutant-specific cap sensitivity sweep
   Trade-off: +2% more data, slightly worse tree calibration
 ```
 
@@ -706,13 +692,13 @@ Opportunity 4: Looser outlier bounds for XGB
 | Aspect | LSTM | XGB |
 |--------|------|-----|
 | **Gap handling** | Break sequences (>6h) | Interpolate all |
-| **Outlier handling** | Keep all | Remove >300 |
+| **Outlier handling** | Keep plausible outliers | Pollutant caps (PM2.5/PM10/NO2/O3) |
 | **Scaling** | RobustScaler | None |
 | **Features** | 15 minimal | 55 rich |
 | **Feature timing** | Sequences then lags | All features then rows |
 | **Data retention** | ~73% | ~70% |
 | **Rationale** | Preserve temporal patterns | Prevent tree splits on noise |
-| **Strength** | Long horizons (7d/28d) | Short horizons (1h/12h) |
+| **Strength** | Active horizons (`h1`,`h24`,`h168`) | Strong tabular baseline across active horizons |
 
 ---
 
@@ -734,7 +720,7 @@ Opportunity 4: Looser outlier bounds for XGB
 **XGB Pipeline:**
 - [ ] Interpolate all gaps
 - [ ] Create missingness features (6)
-- [ ] Remove outliers (PM2.5 >300)
+- [ ] Apply pollutant-specific caps (PM2.5/PM10/NO2/O3)
 - [ ] Create lag features (7 lags)
 - [ ] Create rolling statistics
 - [ ] Create lagged weather features
@@ -769,4 +755,3 @@ assert len(train_data[train_data.region == 'IGKV']) > 0
 assert lstm_X_train.shape == (87500, seq_len_var, 15)
 assert xgb_X_train.shape == (87500, 55)
 ```
-

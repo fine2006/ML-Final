@@ -173,7 +173,7 @@ Y-axis: Loss sources
   - Outlier removal
   - Sequence breaking
 
-Title: "Data Loss Attribution (170,591 → 116,257 records)"
+Title: "Data Loss Attribution (Canonical Pipeline)"
 
 Data labels: Percentage and absolute count for each source
 ```
@@ -182,7 +182,7 @@ Data labels: Percentage and absolute count for each source
 
 **File**: `region_imbalance_distribution.png`
 
-**Objective**: Visualize 6.5× imbalance
+**Objective**: Visualize canonical region distribution and post-sequence imbalance
 
 **Plot type**: Pie chart + bar chart
 
@@ -190,15 +190,15 @@ Data labels: Percentage and absolute count for each source
 Pie chart:
   - Slice per region
   - Label: Region name + percentage
-  - Highlight: Smallest (Bhatagaon 8.8%) and largest (IGKV 57%)
-  - Title: "Data Distribution Across Regions (Raw: 170,591)"
+  - Highlight: near-balanced canonical distribution (~25% each)
+  - Title: "Data Distribution Across Regions (Canonical Hourly)"
 
 Bar chart (below):
   - X-axis: Regions
   - Y-axis: Record count
   - Color: One color per region
-  - Label on top: Imbalance ratio (6.5×)
-  - Title: "Imbalance Ratio: IGKV (57%) vs Bhatagaon (8.8%)"
+  - Label on top: post-sequence max/min ratio (~1.04×)
+  - Title: "Post-Canonical Region Imbalance Ratio"
 ```
 
 ---
@@ -215,7 +215,7 @@ Bar chart (below):
 
 ```
 Flow (left to right):
-  1. Raw data: 170,591
+  1. Canonical hourly baseline: 125,017
   2. After impossible values removed: →
   3. After gap interpolation: →
   4. After gap breaking: →
@@ -242,7 +242,7 @@ Color coding:
 
 ```
 Flow (left to right):
-  1. Raw data: 170,591
+  1. Canonical hourly baseline: 125,017
   2. After impossible values removed: →
   3. After aggressive gap interpolation: →
   4. After outlier removal: →
@@ -418,11 +418,11 @@ Annotations:
 
 **Objective**: Show what attention heads focus on
 
-**Plot type**: Heatmap (5 horizons × sequence length)
+**Plot type**: Heatmap (3 active horizons × sequence length)
 
 ```
 X-axis: Sequence position (time steps back from prediction)
-Y-axis: Horizons (t+1h, t+12h, t+24h, t+7d, t+28d)
+Y-axis: Horizons (`h1`, `h24`, `h168`)
 
 Heatmap cells:
   - Color intensity: Attention weight (0 to 1)
@@ -432,8 +432,8 @@ Heatmap cells:
 Title: "LSTM PM2.5 - Attention Weight Distribution"
 
 Pattern expected:
-  - t+1h attention: Recent timesteps (right side)
-  - t+28d attention: Full lookback window
+  - h1 attention: short-horizon recency emphasis
+  - h168 attention: broader long-context emphasis
   - Each horizon has distinct pattern
 ```
 
@@ -523,10 +523,10 @@ X-axis: Epoch
 Y-axis: Validation loss
 
 Lines (one per region):
-  - Blue: Bhatagaon (weighted 2.84×)
-  - Orange: IGKV (weighted 0.44×)
-  - Green: AIIMS (weighted 1.26×)
-  - Red: SILTARA (weighted 1.27×)
+  - Blue: Bhatagaon (~1.009×)
+  - Orange: IGKV (~0.994×)
+  - Green: AIIMS (~0.979×)
+  - Red: SILTARA (~1.020×)
 
 Title: "Per-Region Validation Loss (with Region Weighting)"
 
@@ -551,7 +551,7 @@ Interpretation: If one region diverges, weighting not working
 **Plot type**: Grouped bar chart
 
 ```
-X-axis: Horizons (t+1h, t+12h, t+24h, t+7d, t+28d)
+X-axis: Horizons (`h1`, `h24`, `h168`)
 Y-axis: RMSE (µg/m³)
 
 Bars per horizon:
@@ -563,11 +563,9 @@ Title: "LSTM vs XGB - RMSE by Prediction Horizon"
 Labels: RMSE value on bar + percentage difference
 
 Expected pattern:
-  - t+1h: Similar (LSTM ~1% better)
-  - t+12h: LSTM ~10% better
-  - t+24h: LSTM ~20% better
-  - t+7d: LSTM 40-65% better ✓
-  - t+28d: LSTM 40-65% better ✓
+  - performance differs by pollutant and horizon
+  - PM may lead on RMSE while still under-covering
+  - gas often requires rescue tuning at `h168`
 ```
 
 ### 6.2 LSTM vs XGB - CRPS by Horizon
@@ -579,7 +577,7 @@ Expected pattern:
 **Plot type**: Grouped bar chart
 
 ```
-X-axis: Horizons (t+1h, t+12h, t+24h, t+7d, t+28d)
+X-axis: Horizons (`h1`, `h24`, `h168`)
 Y-axis: CRPS (µg/m³)
 
 Bars per horizon:
@@ -716,16 +714,14 @@ Expected:
 
 **Objective**: Visually inspect prediction quality
 
-**Plot type**: 5 scatter plots (one per horizon)
+**Plot type**: 3 scatter plots (one per active horizon)
 
 ```
-Subplots (2×3 grid, one per horizon):
-  1. t+1h
-  2. t+12h
-  3. t+24h
-  4. t+7d
-  5. t+28d
-  6. (unused)
+Subplots (2×2 grid, one empty):
+  1. h1
+  2. h24
+  3. h168
+  4. (unused)
 
 Each subplot:
   - X-axis: Actual PM2.5 (µg/m³)
@@ -752,7 +748,7 @@ Expected: Points clustered along diagonal (no systematic bias)
 ```
 Table structure:
   Rows: Metrics (RMSE, CRPS, Coverage, PIT p-value)
-  Columns: Horizons (t+1h, t+12h, t+24h, t+7d, t+28d)
+  Columns: Horizons (`h1`, `h24`, `h168`)
 
 Cells: LSTM value | XGB value | LSTM advantage %
 
@@ -761,10 +757,10 @@ Colors:
   - Yellow cell: Similar performance
   - Red cell: XGB better
 
-Title: "Summary Comparison: LSTM vs XGB Across All Horizons"
+Title: "Summary Comparison: LSTM vs XGB Across Active Horizons"
 
 Bottom section: Key findings
-  - LSTM advantage at t+7d/t+28d: XX-XX%
+  - Gate pass/fail by pollutant/horizon (from operational gates)
   - Per-region fairness: Max ratio XX.X×
   - Quantile calibration: PIT p-value X.XXX
 ```
@@ -831,4 +827,3 @@ plt.close()
 
 print(f"✓ Saved: {output_dir}/lstm_vs_xgb_rmse_by_horizon.png")
 ```
-

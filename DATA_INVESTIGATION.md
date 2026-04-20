@@ -174,7 +174,7 @@ Recommendation:
 ## 2. Data Loss Root Cause Analysis
 
 ### 2.1 Investigation Objective
-Identify why 31.9% of records lost (170,591 → 116,257); find recovery opportunities
+Identify root-cause attrition in canonical hourly pipeline; find recovery opportunities
 
 ### 2.2 Analysis Procedure
 
@@ -322,7 +322,7 @@ Recommendation:
 ## 3. Region Imbalance Quantification
 
 ### 3.1 Investigation Objective
-Characterize 6.5× data imbalance (IGKV 57% vs Bhatagaon 8.8%) and plan mitigation
+Characterize post-canonical region imbalance and plan mitigation
 
 ### 3.2 Analysis Procedure
 

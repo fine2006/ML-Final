@@ -117,6 +117,34 @@ run_cmd(["uv", "run", "python", "scripts/preprocess_lstm.py"], cwd=ROOT, env=env
 run_cmd(["uv", "run", "python", "scripts/preprocess_xgb.py"], cwd=ROOT, env=env)
 
 
+
+
+
+
+# %% [code]
+# Phase 2: Optuna hyperparameter tuning for h168
+print("\n=== Starting Optuna Hyperparameter Tuning for h168 ===")
+run_cmd([
+    "uv", "run", "python", "scripts/optuna_tune_h168.py"
+], cwd=ROOT)
+
+
+# %% [code]
+# Phase 3: Walk-forward cross-validation for h168
+print("\n=== Starting Walk-Forward Cross-Validation for h168 ===")
+run_cmd([
+    "uv", "run", "python", "scripts/walkforward_cv_h168.py"
+], cwd=ROOT)
+
+
+# %% [code]
+# Phase 4: Aggregate h168 results
+print("\n=== Starting Results Aggregation for h168 ===")
+run_cmd([
+    "uv", "run", "python", "scripts/aggregate_results_h168.py"
+], cwd=ROOT)
+
+
 # %% [code]
 # Keep XGB frozen by default (use precomputed models)
 repo = ROOT.resolve()
@@ -327,7 +355,8 @@ def random_space_with_seed(seed=42):
 
     runs = []
 
-    # 16 gas rescue
+    # Interleave runs to guarantee each dual-GPU pair has different pollutants.
+    # 16 gas rescue = 8 no2 + 8 o3 (delta mode)
     for i in range(8):
         runs.append(
             {
@@ -348,7 +377,6 @@ def random_space_with_seed(seed=42):
                 "scheduler_patience": 3,
             }
         )
-    for i in range(8):
         runs.append(
             {
                 "tag": f"pilot_o3_delta_{i+1:02d}",
@@ -369,7 +397,7 @@ def random_space_with_seed(seed=42):
             }
         )
 
-    # 8 PM refinement
+    # 8 PM refinement = 4 pm25 + 4 pm10 (level mode), interleaved
     for i in range(4):
         runs.append(
             {
@@ -389,7 +417,6 @@ def random_space_with_seed(seed=42):
                 "scheduler_patience": 4,
             }
         )
-    for i in range(4):
         runs.append(
             {
                 "tag": f"pilot_pm10_refine_{i+1:02d}",
@@ -422,28 +449,11 @@ PILOT_RUNS = ALL_RUNS[:8]
 
 for i in range(0, len(PILOT_RUNS), 2):
     pair = PILOT_RUNS[i : i + 2]
-    if len(pair) == 2:
-        print("\n=== dual-gpu pilot batch ===", pair[0]["tag"], "|", pair[1]["tag"], "===")
-        run_pair(pair[0], pair[1])
-    else:
-        cfg = pair[0]
-        print("\n=== single-gpu pilot batch ===", cfg["tag"], "===")
-        run_pair(cfg, {
-            "tag": "_noop_",
-            "pollutant": "pm25",
-            "target_mode": "level",
-            "seq_len": 336,
-            "hidden_dim": 64,
-            "num_layers": 2,
-            "num_heads": 2,
-            "lr": 1.5e-4,
-            "dropout": 0.25,
-            "head_dropout": 0.2,
-            "weight_decay": 1e-4,
-            "epochs": 1,
-            "patience": 1,
-            "scheduler_patience": 1,
-        })
+    if len(pair) != 2:
+        raise RuntimeError("Pilot runs must be even-sized for dual-GPU execution")
+
+    print("\n=== dual-gpu pilot batch ===", pair[0]["tag"], "|", pair[1]["tag"], "===")
+    run_pair(pair[0], pair[1])
 
     for cfg in pair:
         fair_path, _ = run_eval(cfg["tag"], horizons="168", pollutants=cfg["pollutant"])
@@ -493,6 +503,8 @@ REMAINING_RUNS = ALL_RUNS[8:]
 if AUTO_CONTINUE:
     for i in range(0, len(REMAINING_RUNS), 2):
         pair = REMAINING_RUNS[i : i + 2]
+        if len(pair) != 2:
+            raise RuntimeError("Remaining runs must be even-sized for dual-GPU execution")
         print("\n=== dual-gpu remaining batch ===", pair[0]["tag"], "|", pair[1]["tag"], "===")
         run_pair(pair[0], pair[1])
 
