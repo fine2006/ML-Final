@@ -626,9 +626,23 @@ def main():
     print(f"Max trials: {N_TRIALS}")
     print("=" * 80)
     
-    # Load region weights
-    with open(ROOT / "data" / "preprocessed_lstm_v1" / "region_weights.json", "r") as f:
-        region_weights = json.load(f)
+    # Region weights (from Phase 1 analysis - mild weighting)
+    # Calculated as: weight_r = (1/4) / fraction_r
+    DEFAULT_REGION_WEIGHTS = {
+        "AIIMS": 0.979,
+        "IGKV": 0.994,
+        "Bhatagaon": 1.009,
+        "SILTARA": 1.020,
+    }
+    
+    # Try to load from metadata.json (where preprocess saves them)
+    metadata_path = ROOT / "data" / "preprocessed_lstm_v1" / "metadata.json"
+    if metadata_path.exists():
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+        region_weights = metadata.get("region_weights", DEFAULT_REGION_WEIGHTS)
+    else:
+        region_weights = DEFAULT_REGION_WEIGHTS
     
     print(f"Region weights: {region_weights}")
     print()

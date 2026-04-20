@@ -592,9 +592,22 @@ def run_wfcv(pollutant: str, champion_hparams: Dict) -> Dict:
     pollutant_names = train_metadata["pollutant_names"]
     pollutant_indices = {name: idx for idx, name in enumerate(pollutant_names)}
     
-    # Load region weights
-    with open(ROOT / "data" / "preprocessed_lstm_v1" / "region_weights.json", "r") as f:
-        region_weights = json.load(f)
+    # Region weights (from Phase 1 analysis - mild weighting)
+    DEFAULT_REGION_WEIGHTS = {
+        "AIIMS": 0.979,
+        "IGKV": 0.994,
+        "Bhatagaon": 1.009,
+        "SILTARA": 1.020,
+    }
+    
+    # Try to load from metadata.json
+    metadata_path = ROOT / "data" / "preprocessed_lstm_v1" / "metadata.json"
+    if metadata_path.exists():
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+        region_weights = metadata.get("region_weights", DEFAULT_REGION_WEIGHTS)
+    else:
+        region_weights = DEFAULT_REGION_WEIGHTS
     
     # Results
     fold_results = []
