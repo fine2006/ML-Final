@@ -21,11 +21,53 @@ Output: models/experiments/aggregated_h168_results.json
 
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
+
+# Pilot configs for NO2/O3 (from previous runs)
+NO2_PILOT_CONFIG = {
+    "hidden_dim": 128,
+    "dropout": 0.279,
+    "head_dropout": 0.217,
+    "lr": 0.00012,
+    "weight_decay": 5.67e-05,
+    "target_mode": "delta_ma3",
+    "delta_baseline_window": 3,
+    "seq_len": 168,
+    "num_heads": 2,
+    "num_layers": 2,
+}
+
+# Alternate NO2 config (from optuna-style search)
+NO2_OPT_CONFIG = {
+    "hidden_dim": 96,
+    "dropout": 0.389,
+    "head_dropout": 0.2,
+    "lr": 0.000201,
+    "weight_decay": 0.000105,
+    "target_mode": "delta_ma3",
+    "delta_baseline_window": 3,
+    "seq_len": 168,
+    "num_heads": 2,
+    "num_layers": 2,
+}
+
+O3_PILOT_CONFIG = {
+    "hidden_dim": 128,
+    "dropout": 0.165,
+    "head_dropout": 0.291,
+    "lr": 0.000095,
+    "weight_decay": 2.02e-05,
+    "target_mode": "delta_ma3",
+    "delta_baseline_window": 3,
+    "seq_len": 48,
+    "num_heads": 4,
+    "num_layers": 2,
+}
 
 # ============================================================================
 # CONFIGURATION
@@ -34,6 +76,7 @@ import pandas as pd
 import argparse
 parser = argparse.ArgumentParser(description="Aggregate h168 results")
 parser.add_argument("--output", type=str, default=None, help="Output path")
+parser.add_argument("--skip-pilot", action="store_true", help="Skip NO2/O3 pilot training")
 args_cli = parser.parse_args()
 
 ROOT = Path(__file__).parent.parent
@@ -336,6 +379,106 @@ def generate_narrative_summary(gate_report: List[Dict]) -> str:
 
 
 # ============================================================================
+# HOLDING EVAL FOR NO2/O3 PILOT MODELS
+# ============================================================================
+
+
+def run_pilot_holdout_eval(pollutant: str, config: Dict, tag: str = None) -> Dict:
+    """Run holdout eval for NO2/O3 pilot models using train_lstm.py + evaluate.py"""
+    
+    import subprocess
+    
+    # Set GPU for this training
+    gpu_id = 0 if pollutant == "no2" or "no2" in tag else 1
+    if tag is None:
+        tag = f"pilot_{pollutant}_holdout"
+    
+    # Build training command
+    cmd = [
+        "uv", "run", "python", "scripts/train_lstm.py",
+        "--pollutants", pollutant,
+        "--horizons", "168",
+        "--seq-len-map", f"168:{config['seq_len']}",
+        "--target-mode", config["target_mode"],
+        "--delta-baseline-window", str(config["delta_baseline_window"]),
+        "--device", "cuda",
+        "--gpu-id", str(gpu_id),
+        "--batch-size", "128",
+        "--epochs", "60",
+        "--patience", "10",
+        "--lr", str(config["lr"]),
+        "--hidden-dim", str(config["hidden_dim"]),
+        "--num-layers", str(config.get("num_layers", 2)),
+        "--num-heads", str(config["num_heads"]),
+        "--dropout", str(config["dropout"]),
+        "--head-dropout", str(config["head_dropout"]),
+        "--weight-decay", str(config["weight_decay"]),
+        "--scheduler-factor", "0.5",
+        "--scheduler-patience", "3",
+        "--max-grad-norm", "1.0",
+        "--min-attn-window", "24",
+        "--summary-path", str(OUTPUT_DIR / f"{tag}_summary.json"),
+    ]
+    
+    print(f"\n{'='*60}")
+    print(f"Training {pollutant.upper()} pilot model (holdout eval)")
+    print(f"Config: {config}")
+    print(f"{'='*60}")
+    
+    # Set GPU
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    
+    result = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
+    
+    if result.returncode != 0:
+        print(f"ERROR: Training failed for {pollutant}")
+        print(result.stderr)
+        return {"error": "Training failed", "pollutant": pollutant}
+    
+    print(f"Training complete. Running evaluation...")
+    
+    # Run evaluation
+    eval_cmd = [
+        "uv", "run", "python", "scripts/evaluate.py",
+        "--pollutants", pollutant,
+        "--horizons", "168",
+        "--device", "cuda",
+        "--fair-intersection",
+        "--calibrate-quantiles",
+    ]
+    
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    eval_result = subprocess.run(eval_cmd, cwd=ROOT, env=env, capture_output=True, text=True)
+    
+    if eval_result.returncode != 0:
+        print(f"ERROR: Evaluation failed for {pollutant}")
+        print(eval_result.stderr)
+        return {"error": "Evaluation failed", "pollutant": pollutant}
+    
+    # Load evaluation results
+    eval_path = ROOT / "models" / "evaluation_summary.json"
+    fair_path = ROOT / "models" / "fair_benchmark_summary.json"
+    
+    results = {"pollutant": pollutant, "config": config}
+    
+    if eval_path.exists():
+        with open(eval_path) as f:
+            results["evaluation"] = json.load(f)
+    
+    if fair_path.exists():
+        with open(fair_path) as f:
+            results["fair_benchmark"] = json.load(f)
+    
+    # Save individual result
+    with open(OUTPUT_DIR / f"pilot_{pollutant}_holdout_results.json", "w") as f:
+        json.dump(results, f, indent=2, default=str)
+    
+    print(f"Pilot {pollutant} holdout eval complete!")
+    return results
+
+
+# ============================================================================
 # MAIN
 # ============================================================================
 
@@ -356,6 +499,30 @@ def main():
     
     print("Loading Optuna results...")
     optuna_results = load_optuna_results()
+    
+    # ========================================
+    # Train and evaluate NO2/O3 pilot models (unless skipped)
+    # ========================================
+    pilot_results = {}
+    if not args_cli.skip_pilot:
+        print("\n" + "=" * 60)
+        print("Training NO2/O3 pilot models (holdout eval)")
+        print("=" * 60)
+        
+# Train NO2 pilot (both configs)
+    no2_pilot_results = run_pilot_holdout_eval("no2", NO2_PILOT_CONFIG, tag="no2_pilot")
+    no2_opt_results = run_pilot_holdout_eval("no2", NO2_OPT_CONFIG, tag="no2_opt")
+    
+    # Train O3 pilot  
+    o3_results = run_pilot_holdout_eval("o3", O3_PILOT_CONFIG)
+    
+    pilot_results = {
+        "no2_pilot": no2_pilot_results,
+        "no2_opt": no2_opt_results,
+        "o3": o3_results,
+    }
+    else:
+        print("\nSkipping pilot model training (--skip-pilot flag set)")
     
     # Calculate skill scores
     print("\nCalculating skill scores...")
@@ -388,6 +555,9 @@ def main():
     # Add Optuna results if available
     if optuna_results:
         aggregated_results["optuna_champions"] = optuna_results
+    
+    # Add pilot (NO2/O3) holdout results
+    aggregated_results["pilot_holdout_results"] = pilot_results
     
     # Save results
     output_path = OUTPUT_DIR / "aggregated_h168_results.json"

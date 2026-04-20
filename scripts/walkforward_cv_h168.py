@@ -54,12 +54,24 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # WFCV settings
 import argparse
+import os
 
 parser = argparse.ArgumentParser(description="Walk-forward cross-validation for h168")
 parser.add_argument("--n-folds", type=int, default=5, help="Number of WFCV folds")
 parser.add_argument("--pollutants", type=str, default="pm25,pm10,no2,o3", help="Comma-separated pollutants")
 parser.add_argument("--champion-config", type=str, default=None, help="Path to champion config JSON")
+parser.add_argument("--gpu-id", type=int, default=None, help="GPU ID to use (0 or 1)")
+parser.add_argument("--output", type=str, default=None, help="Output filename")
 args_cli = parser.parse_args()
+
+# Set GPU device if specified
+if args_cli.gpu_id is not None:
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args_cli.gpu_id)
+
+# Custom output path for multi-GPU runs
+OUTPUT_FILE = "wfcv_h168_results.json"
+if args_cli.output:
+    OUTPUT_FILE = args_cli.output
 
 N_FOLDS = args_cli.n_folds
 POLLUTANTS = [p.strip() for p in args_cli.pollutants.split(",")]
@@ -93,6 +105,48 @@ SEQ_LEN_BY_POLLUTANT = {
 # Champion configs (from optuna_h168_best_configs.json)
 # Will be loaded dynamically
 CHAMPION_CONFIGS = {}
+
+# Fallback defaults for NO2/O3 (not tuned via Optuna)
+# NO2/O3 use delta_ma3 target mode (per conversation: better for gases)
+# Using pilot run configs from conversation
+
+# NO2: pilot_no2_delta_08 config
+NO2_PARAMS = {
+    "hidden_dim": 128,
+    "dropout": 0.279,
+    "head_dropout": 0.217,
+    "lr": 0.00012,
+    "weight_decay": 5.67e-05,
+    "target_mode": "delta_ma3",
+    "delta_baseline_window": 3,
+    "seq_len": 168,
+    "num_heads": 2,
+}
+
+# O3: pilot_o3_delta_02 config
+O3_PARAMS = {
+    "hidden_dim": 128,
+    "dropout": 0.165,
+    "head_dropout": 0.291,
+    "lr": 0.000095,
+    "weight_decay": 2.02e-05,
+    "target_mode": "delta_ma3",
+    "delta_baseline_window": 3,
+    "seq_len": 48,
+    "num_heads": 4,
+}
+
+# Default for PM (level mode)
+PM_DEFAULT_PARAMS = {
+    "hidden_dim": 64,
+    "dropout": 0.38,
+    "head_dropout": 0.20,
+    "lr": 0.0003,
+    "weight_decay": 5e-05,
+    "target_mode": "level",
+    "seq_len": 336,
+    "num_heads": 2,
+}
 
 # ============================================================================
 # DATA LOADING WITH TIMESTAMPS
@@ -709,21 +763,34 @@ def main():
                 CHAMPION_CONFIGS[pollutant] = results["best_hparams"]
                 print(f"✓ Loaded champion for {pollutant}: {results['best_hparams']}")
             else:
-                print(f"✗ No champion found for {pollutant}")
+                print(f"✗ No champion found for {pollutant}, using defaults")
     else:
-        print(f"✗ Optuna results not found at {optuna_path}")
-        print("Please run optuna_tune_h168.py first.")
-        return
+        print(f"✗ Optuna results not found at {optuna_path}, using defaults for all")
+    
+    # Fill missing pollutants with specific configs
+    for p in POLLUTANTS:
+        if p not in CHAMPION_CONFIGS:
+            if p == "no2":
+                CHAMPION_CONFIGS[p] = NO2_PARAMS.copy()
+                print(f"Using NO2 pilot config for {p}: {NO2_PARAMS}")
+            elif p == "o3":
+                CHAMPION_CONFIGS[p] = O3_PARAMS.copy()
+                print(f"Using O3 pilot config for {p}: {O3_PARAMS}")
+            else:
+                CHAMPION_CONFIGS[p] = PM_DEFAULT_PARAMS.copy()
+                print(f"Using PM default params for {p}: {PM_DEFAULT_PARAMS}")
     
     # Run WFCV for all pollutants
     all_wfcv_results = {}
     
     for pollutant, hparams in CHAMPION_CONFIGS.items():
+        if pollutant not in POLLUTANTS:
+            continue
         wfcv_results = run_wfcv(pollutant, hparams)
         all_wfcv_results[pollutant] = wfcv_results
     
     # Save results
-    output_path = OUTPUT_DIR / "wfcv_h168_results.json"
+    output_path = OUTPUT_DIR / OUTPUT_FILE
     with open(output_path, "w") as f:
         json.dump(all_wfcv_results, f, indent=2, default=str)
     
@@ -740,5 +807,32 @@ def main():
         print(f"    Coverage: {agg['avg_coverage']:.4f} ± {agg['std_coverage']:.4f}")
 
 
+def merge_results():
+    """Merge results from multiple GPU runs."""
+    import argparse
+    parser = argparse.ArgumentParser(description="Merge WFCV results")
+    parser.add_argument("--files", type=str, nargs="+", help="Files to merge")
+    parser.add_argument("--output", type=str, default="wfcv_h168_results_merged.json", help="Output file")
+    args = parser.parse_args()
+    
+    merged = {}
+    for filepath in args.files:
+        p = Path(filepath)
+        if p.exists():
+            with open(p) as f:
+                data = json.load(f)
+            merged.update(data)
+            print(f"Merged {len(data)} entries from {p.name}")
+    
+    out_path = OUTPUT_DIR / args.output
+    with open(out_path, "w") as f:
+        json.dump(merged, f, indent=2, default=str)
+    print(f"Merged total: {len(merged)} pollutants -> {out_path}")
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--merge":
+        merge_results()
+    else:
+        main()

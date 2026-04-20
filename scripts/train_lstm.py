@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import random
 import sys
 from dataclasses import dataclass
@@ -1212,6 +1213,7 @@ def parse_args() -> argparse.Namespace:
         help="Ignored in separated-horizon training mode",
     )
     parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--gpu-id", type=int, default=None, help="GPU ID to use (0 or 1)")
     parser.add_argument("--max-train-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
     parser.add_argument("--max-test-samples", type=int, default=None)
@@ -1246,6 +1248,11 @@ def main() -> None:
 
     data_dir = Path(args.data_dir)
     split_tables = load_split_tables(data_dir)
+
+    # Set GPU if specified
+    if args.gpu_id is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
+        print(f"Using GPU {args.gpu_id}")
 
     if args.device == "auto":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

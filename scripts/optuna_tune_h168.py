@@ -88,13 +88,13 @@ if args_cli.n_trials != N_TRIALS:
 
 POLLUTANTS = [p.strip() for p in args_cli.pollutants.split(",")]
 
-# Search space (approved)
+# Search space (narrowed around pilot winners)
 SEARCH_SPACE = {
-    "hidden_dim": [64, 96],
-    "dropout": [0.35, 0.37, 0.389, 0.40, 0.42],
-    "head_dropout": [0.15, 0.167, 0.183, 0.20],
-    "lr": [2e-4, 2.5e-4, 3e-4, 3.78e-4, 4e-4, 5e-4],
-    "weight_decay": [1e-5, 5e-5, 1e-4, 1.31e-4, 5e-4, 1e-3],
+    "hidden_dim": [64],                     # Fix at 64
+    "dropout": [0.35, 0.38, 0.40],          # Narrow around the winner
+    "head_dropout": [0.18, 0.20],            # Narrow around the winner
+    "lr": [0.00025, 0.0003, 0.00035],      # Precision tuning
+    "weight_decay": [1e-05, 5e-05, 1e-04],  # Keep it light
 }
 
 # Fixed settings
