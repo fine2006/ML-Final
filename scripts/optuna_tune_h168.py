@@ -383,13 +383,16 @@ def composite_loss(preds: torch.Tensor, targets: torch.Tensor,
 
 
 def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optimizer,
-                quantiles: List[float]) -> Tuple[float, Dict]:
+                quantiles: List[float], device: torch.device) -> Tuple[float, Dict]:
     """Train for one epoch."""
     model.train()
     total_loss = 0.0
     metrics_accum = {}
     
     for batch_features, batch_targets, batch_weights in dataloader:
+        batch_features = batch_features.to(device)
+        batch_targets = batch_targets.to(device)
+        
         optimizer.zero_grad()
         
         # Forward
@@ -411,7 +414,7 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
     return total_loss / n_batches, metrics_mean
 
 
-def validate(model: nn.Module, dataloader: DataLoader, quantiles: List[float]) -> Dict:
+def validate(model: nn.Module, dataloader: DataLoader, quantiles: List[float], device: torch.device) -> Dict:
     """Validate and compute metrics."""
     model.eval()
     all_preds = []
@@ -419,6 +422,8 @@ def validate(model: nn.Module, dataloader: DataLoader, quantiles: List[float]) -
     
     with torch.no_grad():
         for batch_features, batch_targets, _ in dataloader:
+            batch_features = batch_features.to(device)
+            batch_targets = batch_targets.to(device)
             preds = model(batch_features)
             all_preds.append(preds.cpu().numpy())
             all_targets.append(batch_targets.cpu().numpy())
@@ -533,11 +538,12 @@ def train_model(hparams: Dict, pollutant: str, region_weights: Dict[str, float])
             DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=True,
                       num_workers=N_WORKERS),
             optimizer,
-            TARGET_QUANTILES
+            TARGET_QUANTILES,
+            device
         )
         
         # Validate
-        val_metrics = validate(model, val_loader, TARGET_QUANTILES)
+        val_metrics = validate(model, val_loader, TARGET_QUANTILES, device)
         
         history["train_loss"].append(train_loss)
         history["val_score"].append(val_metrics["score"])
@@ -561,7 +567,7 @@ def train_model(hparams: Dict, pollutant: str, region_weights: Dict[str, float])
         model.load_state_dict(best_model_state)
     
     # Test evaluation
-    test_metrics = validate(model, test_loader, TARGET_QUANTILES)
+    test_metrics = validate(model, test_loader, TARGET_QUANTILES, device)
     test_metrics["history"] = history
     test_metrics["best_epoch"] = len(history["val_score"])
     
