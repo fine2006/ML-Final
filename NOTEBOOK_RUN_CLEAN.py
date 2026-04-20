@@ -143,7 +143,7 @@ cmd_gpu0 = [
     "--pollutants", "pm25",
     "--gpu-id", "0",
     "--output", "optuna_h168_gpu0.json",
-    "--n-trials", "15",
+    "--n-trials", "25",
 ]
 
 print("$ CUDA_VISIBLE_DEVICES=0", " ".join(cmd_gpu0))
@@ -162,7 +162,7 @@ cmd_gpu1 = [
     "--pollutants", "pm10",
     "--gpu-id", "1",
     "--output", "optuna_h168_gpu1.json",
-    "--n-trials", "15",
+    "--n-trials", "25",
 ]
 
 print("$ CUDA_VISIBLE_DEVICES=1", " ".join(cmd_gpu1))

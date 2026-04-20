@@ -779,28 +779,40 @@ Calibration conclusion (checkpoint):
 
 ## 6.4 h168 Forensic Refinement
 
-### 6.4.1 Optuna Search Space Justification
+### 6.4.1 Optuna Search Space (PM25/PM10)
 
 | Parameter | Range | Strategy |
 |-----------|-------|----------|
-| hidden_dim | [64, 96] | Small capacity as noise filter |
-| dropout | [0.35, 0.42] | High regularization for sensor noise |
-| head_dropout | [0.15, 0.20] | Quantile head stabilization |
-| lr | [2e-4, 5e-4] | Slow, stable convergence |
-| weight_decay | [1e-5, 1e-3] | Penalty for high-variance weights |
-| seq_len | Fixed: 336 (PM), 168 (gas) | Weekly cycle capture |
-| num_layers | 2 (fixed) | From pilot showing leaner is better |
-| num_heads | 2 (fixed) | From pilot showing leaner is better |
+| hidden_dim | [64] | Fixed (96 is overkill/noisy) |
+| dropout | [0.35, 0.38, 0.40] | Narrow around pilot winner |
+| head_dropout | [0.18, 0.20] | Narrow around pilot winner |
+| lr | [2.5e-4, 3e-4, 3.5e-4] | Precision tuning |
+| weight_decay | [1e-5, 5e-5, 1e-4] | Keep it light |
+| seq_len | 336 (PM) | Weekly cycle |
+| num_layers | 2 (fixed) | From pilot |
+| num_heads | 2 (fixed) | From pilot |
 
 Composite Loss: 0.6×RMSE + 0.4×MeanPinballLoss
 Pareto Gate: Penalize trials where Coverage < 0.70
+N_TRIALS: 15 per pollutant
 
-### 6.4.2 WFCV Methodology
+### 6.4.2 WFCV Methodology (PM Only)
 
 - 5-fold expanding window
 - 168h gap between train end and test start (operational gap)
-- Proves model predicts "next week" using only "last week" data
-- No shuffling, strict temporal splits
+- Only for PM25/PM10 (NO2/O3 use holdout eval)
+- NO2/O3 use pilot configs with holdout validation
+
+### 6.4.3 NO2/O3 Pilot Configs (Holdout Eval)
+
+| Config | hidden_dim | dropout | lr | weight_decay | target_mode |
+|-------|------------|---------|-----|--------------|-------------|
+| no2_pilot | 128 | 0.279 | 0.00012 | 5.67e-05 | delta_ma3 |
+| no2_opt | 96 | 0.389 | 0.000201 | 0.000105 | delta_ma3 |
+| o3_pilot | 128 | 0.165 | 0.000095 | 2.02e-05 | delta_ma3 |
+
+NO2: Trains both configs, evaluates on test set
+O3: Trains pilot config, evaluates on test set
 
 ### 6.4.3 Performance Tiers Classification
 

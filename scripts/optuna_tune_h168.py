@@ -58,7 +58,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_FILE = "optuna_h168_best_configs.json"
 
 # Optuna settings
-N_TRIALS = 50
+N_TRIALS = 25
 N_WORKERS = 4
 BATCH_SIZE = 32
 MAX_EPOCHS = 100
@@ -830,4 +830,3 @@ if __name__ == "__main__":
         merge_results()
     else:
         main()
-    main()

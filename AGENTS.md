@@ -258,6 +258,25 @@ visualizations/                  # Output plots & results
 - Coverage (% actuals in p5-p95, target 90%)
 - PIT KS stat (calibration test)
 
+---
+
+### h168 Forensic Refinement Pipeline
+
+**Phase h168-1**: Optuna Hyperparameter Tuning (dual-GPU)
+- GPU 0: PM25 (15 trials)
+- GPU 1: PM10 (15 trials)
+- Output: optuna_h168_best_configs.json
+
+**Phase h168-2**: Walk-Forward Cross-Validation (dual-GPU)
+- GPU 0: PM25 (5-fold WFCV)
+- GPU 1: PM10 (5-fold WFCV)
+- Output: wfcv_h168_results.json
+
+**Phase h168-3**: Aggregation + NO2/O3 Holdout Eval
+- Trains NO2 (2 configs) + O3 pilot models
+- Holdout eval on test set
+- Output: aggregated_h168_results.json
+
 **Per-Region Fairness**:
 - RMSE per region (target: max ratio <1.5×)
 - Verify region weighting worked
